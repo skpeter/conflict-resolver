@@ -1,0 +1,37 @@
+@import 'tailwindcss';
+@import '@fontsource/source-sans-3/400.css';
+@import '@fontsource/source-sans-3/600.css';
+
+@theme {
+  --font-sans: 'Source Sans 3', ui-sans-serif, system-ui, sans-serif;
+  --color-heat-hot: #d0d0d0;
+  --color-heat-warm: #e6e6e6;
+  --color-border: #bbb;
+  --color-ink: #222;
+  --color-muted: #555;
+  --color-link: #1a4d8c;
+  --color-link-visited: #5a3d7a;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.45;
+  color: var(--color-ink);
+  background: #f7f7f7;
+}
+
+a {
+  color: var(--color-link);
+}
+
+a:visited {
+  color: var(--color-link-visited);
+}
