@@ -444,6 +444,16 @@ async function walkLookup(
   return { sets, failed: false, incomplete: false }
 }
 
+/**
+ * start.gg clocks are unix seconds. A value already in milliseconds
+ * (1e12 or more) is left alone so a caller that pre-converted stays valid.
+ */
+function startGgUnixToMs(value: number | null): number | null {
+  if (value == null) return null
+  if (Math.abs(value) < 1_000_000_000_000) return value * 1000
+  return value
+}
+
 function mapH2H(n: H2HNode): HistorySet | null {
   const slots = (n.slots ?? []).map((s) => {
     const parts = s.entrant?.participants ?? []
@@ -460,13 +470,13 @@ function mapH2H(n: H2HNode): HistorySet | null {
   return {
     id: String(n.id),
     state: n.state,
-    completedAt: n.completedAt,
-    startedAt: n.startedAt,
+    completedAt: startGgUnixToMs(n.completedAt),
+    startedAt: startGgUnixToMs(n.startedAt),
     fullRoundText: n.fullRoundText,
     winnerId: n.winnerId != null ? String(n.winnerId) : null,
     eventName: n.event?.name ?? '',
     eventSlug,
-    eventStartAt: n.event?.startAt ?? null,
+    eventStartAt: startGgUnixToMs(n.event?.startAt ?? null),
     tournamentSlug: n.event?.tournament?.slug ?? '',
     slots: slots as HistorySet['slots'],
   }
