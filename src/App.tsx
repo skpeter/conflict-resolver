@@ -339,6 +339,8 @@ export default function App() {
     return [...scoredSets].sort((a, b) => b.heat - a.heat)
   }, [scoredSets])
 
+  const historyPending = [...pairs.values()].some((pair) => pair.status === 'checking')
+
   const moves: SuggestedMove[] = useMemo(() => {
     if (!loaded) return []
     if ([...pairs.values()].some((p) => p.status === 'checking')) return []
@@ -678,7 +680,11 @@ export default function App() {
             <h2 className="text-base font-semibold">
               Smallest move that cools the hot match
             </h2>
-            {moves.length === 0 ? (
+            {historyPending ? (
+              <p className="mt-2 text-base text-zinc-700">
+                Still reading history. The move appears when every pair is settled.
+              </p>
+            ) : moves.length === 0 ? (
               <p className="mt-2 text-base text-zinc-700">
                 No move cools the hottest match.
               </p>
