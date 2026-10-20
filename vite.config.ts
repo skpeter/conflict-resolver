@@ -6,7 +6,15 @@ import { defineConfig } from 'vite'
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url))
 
+function pagesBase(): string {
+  const raw = process.env.VITE_BASE_PATH
+  if (!raw || raw === '/') return '/'
+  const withLeading = raw.startsWith('/') ? raw : `/${raw}`
+  return withLeading.endsWith('/') ? withLeading : `${withLeading}/`
+}
+
 export default defineConfig({
+  base: pagesBase(),
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

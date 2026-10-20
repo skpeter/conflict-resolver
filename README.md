@@ -2,7 +2,13 @@
 
 One-page start.gg tool for elimination brackets. Paste an event or bracket link and a token, see rematch heat, open the last meeting, and push a small seed move while the phase is unplayed.
 
-## Run
+## Published page
+
+Pushes to `main` build the page and publish it to GitHub Pages:
+
+https://skpeter.github.io/conflict-resolver/
+
+## Run locally
 
 ```bash
 npm install
