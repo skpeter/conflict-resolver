@@ -73,7 +73,8 @@ function playerFromSeed(
 /**
  * Fill empty bracket slots from Start.gg's prerequisite graph.
  * A reported winner is kept. An unresolved match advances the better
- * (lower) seed. Byes, missing links, cycles, and reset sets stay empty.
+ * (lower) seed. An omitted bye set with nobody seated is a bye, and that
+ * set is not a match. Cycles and reset sets stay empty.
  * `seedToHolder` is the bracket after a hypothetical seed slide.
  */
 export function projectBracket(
@@ -187,8 +188,9 @@ export function projectBracket(
     if (slot.prereqId) {
       // start.gg omits a bye set and seats the advancer on the next slot.
       if (!byId.has(slot.prereqId)) {
+        // start.gg omits the bye set. A seated advancer is kept. An empty slot is the bye.
         if (slot.playerId || slot.seedNum != null) return placed(slot)
-        return { kind: 'unresolved' }
+        return { kind: 'bye' }
       }
       if (!mapping && slot.playerId) {
         const player = playerFromSlot(slot, seedNumFor(slot.playerId, slot.seedNum))
@@ -214,6 +216,7 @@ export function projectBracket(
           projected: slot.playerId !== loser.playerId,
         }
       }
+      if (isByeSet(prev.slots)) return { kind: 'bye' }
       return { kind: 'unresolved' }
     }
     return placed(slot)
@@ -278,4 +281,14 @@ export function projectedPlayerIds(slots: ProjectedSlot[]): string[] {
   return slots
     .filter((slot): slot is ProjectedPlayer => slot.kind === 'player')
     .map((slot) => slot.playerId)
+}
+
+/** A bye advances one player, or nobody. It is not a match to show. */
+export function isByeSet(slots: ProjectedSlot[]): boolean {
+  if (slots.length === 0) return false
+  if (slots.some((slot) => slot.kind === 'player') && slots.filter((slot) => slot.kind === 'player').length >= 2) {
+    return false
+  }
+  const empty = slots.filter((slot) => slot.kind !== 'player')
+  return empty.length > 0 && empty.every((slot) => slot.kind === 'bye')
 }

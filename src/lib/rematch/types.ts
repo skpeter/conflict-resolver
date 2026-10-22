@@ -77,7 +77,15 @@ export type SuggestedMove = {
   entrantTag: string
   playerId: string
   shift: 1 | 2
+  /** Everyone else who changes seeds, from the neighbor out to the destination. */
+  shifted: Array<{ tag: string; seedNumFrom: number; seedNumTo: number }>
+  /** Hottest heat anywhere on the bracket after this slide. */
   newHottest: number
+  /** Heat of the selected set before and after the slide. Null when no set is selected. */
+  setHeatBefore: number | null
+  setHeatAfter: number | null
+  /** Players this slide moves into a worse placement tier for this bracket format. */
+  placementNotes: string[]
   seedMapping: Array<{ seedId: string; seedNum: number }>
   preview: PreviewRow[]
   expected: Array<{ seedKey: string; players: string; heat: number }>

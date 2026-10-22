@@ -10,6 +10,8 @@ import {
   computeHeat,
   heatBand,
   isAuthError,
+  describeMovesCard,
+  describeSuggestedMove,
   listSuggestedMoves,
   movesForSelectedSet,
   localCalendarDate,
@@ -18,6 +20,7 @@ import {
   playerKeyOf,
   projectBracket,
   projectedPlayerIds,
+  isByeSet,
   receiptHeading,
   receiptSetUrl,
   resolveStartGgLink,
@@ -416,6 +419,7 @@ export default function App() {
         recencyMultiplier,
         roundMultiplier,
         focusSetId: selectedSetId,
+        bracketType: loaded.phase.bracketType,
       }),
     )
   }, [
@@ -662,7 +666,7 @@ export default function App() {
               </>
             ) : (
             <ul className="space-y-2">
-              {sortedSets.map((row) => {
+              {sortedSets.filter((row) => !isByeSet(row.slots)).map((row) => {
                 const selected = selectedSetId === row.set.id
                 const players = projectedPlayerIds(row.slots)
                 const context = 'context' in row ? row.context : null
@@ -767,25 +771,32 @@ export default function App() {
                 No move cools this set without heating another.
               </p>
             ) : (
-              <ul className="mt-2 space-y-2">
-                {moves.map((m) => (
-                  <li key={m.id}>
-                    <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md border border-zinc-300 px-3 py-2 has-[:checked]:border-zinc-900">
-                      <input
-                        type="radio"
-                        name="move"
-                        className="mt-1 size-4"
-                        checked={selectedMoveId === m.id}
-                        onChange={() => setSelectedMoveId(m.id)}
-                      />
-                      <span>
-                        Move {m.entrantTag} from seed {m.seedNumFrom} to seed{' '}
-                        {m.seedNumTo}. New hottest heat {m.newHottest.toFixed(3)}.
-                      </span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <p className="mt-2 text-base text-zinc-700">{describeMovesCard(moves)}</p>
+                <ul className="mt-2 space-y-2">
+                  {moves.map((m) => (
+                    <li key={m.id}>
+                      <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md border border-zinc-300 px-3 py-2 has-[:checked]:border-zinc-900">
+                        <input
+                          type="radio"
+                          name="move"
+                          className="mt-1 size-4"
+                          checked={selectedMoveId === m.id}
+                          onChange={() => setSelectedMoveId(m.id)}
+                        />
+                        <span>
+                          {describeSuggestedMove(m)}
+                          {m.placementNotes.map((note) => (
+                            <span key={note} className="mt-1 block">
+                              {note}
+                            </span>
+                          ))}
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
 
             {selectedMove ? (

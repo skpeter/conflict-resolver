@@ -23,15 +23,20 @@ import {
   roundIndex,
   setClock,
   shouldApplyGeneration,
+  describeMovesCard,
+  describeSuggestedMove,
   listSuggestedMoves,
   movesForSelectedSet,
+  placementDropNote,
+  tiedPlace,
   projectBracket,
   projectedPlayerIds,
+  isByeSet,
   receiptHeading,
   receiptSetUrl,
   shouldIgnoreLaterMeetings,
 } from '../src/lib/rematch/index.ts'
-import type { PhaseSet, SeedSlot } from '../src/lib/rematch/types.ts'
+import type { PhaseSet, SeedSlot, SuggestedMove } from '../src/lib/rematch/types.ts'
 
 const DAY = 86_400_000
 
@@ -692,6 +697,7 @@ describe('projected bracket', () => {
     ])
     const byeRows = projectBracket([bye, afterBye], seeds)
     assert.equal(byeRows[0]?.scoreable, false)
+    assert.equal(isByeSet(byeRows[0]?.slots ?? []), true)
     assert.deepEqual(projectedPlayerIds(byeRows[1]?.slots ?? []), ['10', '20'])
 
     const missing = phaseSet('missing', 'Winners Final', [
@@ -700,7 +706,42 @@ describe('projected bracket', () => {
     ])
     const missingRow = projectBracket([...winners, missing], seeds).find((row) => row.set.id === 'missing')
     assert.equal(missingRow?.scoreable, false)
-    assert.equal(missingRow?.slots[0]?.kind, 'unresolved')
+    assert.equal(missingRow?.slots[0]?.kind, 'bye')
+    assert.equal(isByeSet(missingRow?.slots ?? []), true)
+
+    const losersBye = phaseSet('lb', 'Losers Round 1', [
+      phaseSlot({ slotIndex: 1, prereqId: 'w1', prereqType: 'set', prereqPlacement: 2 }),
+      phaseSlot({ slotIndex: 2, prereqId: 'omitted-bye', prereqType: 'set', prereqPlacement: 1 }),
+    ])
+    const losersNext = phaseSet('ln', 'Losers Round 2', [
+      phaseSlot({ slotIndex: 1, prereqId: 'lb', prereqType: 'set', prereqPlacement: 1 }),
+      phaseSlot({ slotIndex: 2, seedNum: 2, entrantId: 'e2', playerId: '20', gamerTag: 'B' }),
+    ])
+    const passed = projectBracket([...winners, losersBye, losersNext], seeds)
+    const byeRow = passed.find((row) => row.set.id === 'lb')
+    const nextRow = passed.find((row) => row.set.id === 'ln')
+    assert.equal(isByeSet(byeRow?.slots ?? []), true)
+    assert.deepEqual(projectedPlayerIds(nextRow?.slots ?? []), ['40', '20'])
+
+    const doubleBye = phaseSet('bb', 'Losers Round 2', [
+      phaseSlot({ slotIndex: 1, prereqId: 'omit-a', prereqType: 'set', prereqPlacement: 1 }),
+      phaseSlot({ slotIndex: 2, prereqId: 'omit-b', prereqType: 'set', prereqPlacement: 1 }),
+    ])
+    const afterDouble = phaseSet('lr3', 'Losers Round 3', [
+      phaseSlot({ slotIndex: 1, seedNum: 1, entrantId: 'e1', playerId: '10', gamerTag: 'A' }),
+      phaseSlot({ slotIndex: 2, prereqId: 'bb', prereqType: 'set', prereqPlacement: 1 }),
+    ])
+    const real = phaseSet('lr4', 'Losers Round 4', [
+      phaseSlot({ slotIndex: 1, prereqId: 'lr3', prereqType: 'set', prereqPlacement: 1 }),
+      phaseSlot({ slotIndex: 2, seedNum: 2, entrantId: 'e2', playerId: '20', gamerTag: 'B' }),
+    ])
+    const chain = projectBracket([doubleBye, afterDouble, real], seeds)
+    assert.equal(isByeSet(chain.find((row) => row.set.id === 'bb')?.slots ?? []), true)
+    assert.equal(isByeSet(chain.find((row) => row.set.id === 'lr3')?.slots ?? []), true)
+    assert.deepEqual(
+      projectedPlayerIds(chain.find((row) => row.set.id === 'lr4')?.slots ?? []),
+      ['10', '20'],
+    )
 
     const cycle = phaseSet('cycle', 'Winners Final', [
       phaseSlot({ slotIndex: 1, prereqId: 'cycle', prereqType: 'set', prereqPlacement: 1 }),
@@ -798,9 +839,189 @@ describe('focused moves', () => {
     assert.ok(!moves.some((move) => move.id === '2->4'))
   })
 
+  it('keeps a move whose new heat on another set stays below this set', () => {
+    const seeds = [
+      phaseSeed(1, '10', 'A'),
+      phaseSeed(2, '20', 'B'),
+      phaseSeed(3, '30', 'C'),
+      phaseSeed(4, '40', 'D'),
+    ]
+    const sets = [
+      phaseSet('focus', 'Winners Round 1', [
+        phaseSlot({ slotIndex: 1, seedNum: 1, entrantId: 'e1', playerId: '10', gamerTag: 'A' }),
+        phaseSlot({ slotIndex: 2, seedNum: 2, entrantId: 'e2', playerId: '20', gamerTag: 'B' }),
+      ]),
+      phaseSet('other', 'Winners Round 1', [
+        phaseSlot({ slotIndex: 1, seedNum: 3, entrantId: 'e3', playerId: '30', gamerTag: 'C' }),
+        phaseSlot({ slotIndex: 2, seedNum: 4, entrantId: 'e4', playerId: '40', gamerTag: 'D' }),
+      ]),
+    ]
+    const heatByPair = new Map<string, number>([
+      ['10|20', 0.5],
+      ['10|40', 0.1],
+      ['20|30', 0.2],
+      ['20|40', 0.6],
+    ])
+    const moves = listSuggestedMoves({
+      seeds,
+      sets,
+      daysByPair: new Map(),
+      focusSetId: 'focus',
+      pairHeat: (a, b) => {
+        const heat = heatByPair.get(pairKey(a, b))
+        if (heat == null) return { missing: true }
+        return { ok: true, heat }
+      },
+    })
+    assert.ok(moves.some((move) => move.id === '4->2'))
+    assert.ok(!moves.some((move) => move.id === '2->4'))
+    const kept = moves.find((move) => move.id === '4->2')
+    assert.ok(kept)
+    assert.ok(kept.setHeatAfter != null && kept.setHeatAfter < 0.5)
+    assert.ok(kept.newHottest < 0.5)
+  })
+
   it('hides suggestions until a set is selected', () => {
     assert.deepEqual(movesForSelectedSet(null, movesFor('wf')), [])
     assert.ok(movesForSelectedSet('wf', movesFor('wf')).length > 0)
+  })
+
+  it('names this set’s drop apart from the heat left on the bracket', () => {
+    const seeds = [
+      phaseSeed(1, '10', 'A'),
+      phaseSeed(2, '20', 'B'),
+      phaseSeed(3, '30', 'C'),
+      phaseSeed(4, '40', 'D'),
+    ]
+    const sets = [
+      phaseSet('hot', 'Winners Round 1', [
+        phaseSlot({ slotIndex: 1, seedNum: 1, entrantId: 'e1', playerId: '10', gamerTag: 'A' }),
+        phaseSlot({ slotIndex: 2, seedNum: 4, entrantId: 'e4', playerId: '40', gamerTag: 'D' }),
+      ]),
+      phaseSet('other', 'Winners Round 1', [
+        phaseSlot({ slotIndex: 1, seedNum: 2, entrantId: 'e2', playerId: '20', gamerTag: 'B' }),
+        phaseSlot({ slotIndex: 2, seedNum: 3, entrantId: 'e3', playerId: '30', gamerTag: 'C' }),
+      ]),
+      phaseSet('final', 'Winners Final', [
+        phaseSlot({ slotIndex: 1, prereqId: 'hot', prereqType: 'set', prereqPlacement: 1 }),
+        phaseSlot({ slotIndex: 2, prereqId: 'other', prereqType: 'set', prereqPlacement: 1 }),
+      ]),
+    ]
+    const days = new Map<string, number>([
+      ['10|40', 1],
+      ['10|20', 3],
+    ])
+    const moves = listSuggestedMoves({
+      seeds,
+      sets,
+      daysByPair: days,
+      focusSetId: 'hot',
+      pairHeat: (a, b) => {
+        const key = pairKey(a, b)
+        if (!days.has(key)) return { missing: true }
+        return { ok: true, heat: computeHeat(days.get(key)!, 1) }
+      },
+    })
+    const kept = moves.find((move) => move.id === '4->3' || move.id === '3->4')
+    assert.ok(kept)
+    assert.equal(
+      moves.filter((move) => move.id === '4->3' || move.id === '3->4').length,
+      1,
+    )
+    assert.ok(kept.setHeatBefore != null && kept.setHeatAfter != null)
+    assert.ok(kept.setHeatAfter < kept.setHeatBefore)
+    assert.ok(kept.newHottest > kept.setHeatAfter)
+    const line = describeSuggestedMove(kept)
+    assert.match(line, /Swap C \(seed 3\) with D \(seed 4\)/)
+    assert.match(line, /This set \d\.\d{3} → \d\.\d{3}/)
+    assert.equal(line.includes('Hottest'), false)
+    assert.equal(
+      describeSuggestedMove({
+        entrantTag: 'Yip',
+        seedNumFrom: 22,
+        seedNumTo: 24,
+        shift: 2,
+        shifted: [
+          { tag: 'Finnmacbo', seedNumFrom: 23, seedNumTo: 22 },
+          { tag: 'Acgamer28', seedNumFrom: 24, seedNumTo: 23 },
+        ],
+        setHeatBefore: 0.331,
+        setHeatAfter: 0,
+      } as SuggestedMove),
+      'Move Yip (seed 22) to seed 24. Finnmacbo (seed 23) moves to seed 22, and Acgamer28 (seed 24) moves to seed 23. This set 0.331 → 0.000.',
+    )
+    assert.match(
+      describeMovesCard(moves),
+      /Hottest heat left on the bracket is \d\.\d{3} to \d\.\d{3}, depending on the move/,
+    )
+    assert.match(
+      describeMovesCard([kept]),
+      new RegExp(`Hottest heat left on the bracket: ${kept.newHottest.toFixed(3)}`),
+    )
+  })
+})
+
+describe('placement tiers', () => {
+  it('cuts double elim at 17th and 25th', () => {
+    assert.equal(tiedPlace('double', 24), 17)
+    assert.equal(tiedPlace('double', 25), 25)
+    assert.equal(
+      placementDropNote('DOUBLE_ELIMINATION', 'Acgamer28', 24, 25),
+      'Acgamer28 would be tied for 25th instead of tied for 17th.',
+    )
+    assert.equal(placementDropNote('DOUBLE_ELIMINATION', 'Acgamer28', 25, 24), null)
+    assert.equal(placementDropNote('DOUBLE_ELIMINATION', 'Finnmacbo', 23, 24), null)
+  })
+
+  it('keeps seeds 24 and 25 in the same single-elim tier', () => {
+    assert.equal(tiedPlace('single', 24), 17)
+    assert.equal(tiedPlace('single', 25), 17)
+    assert.equal(placementDropNote('SINGLE_ELIMINATION', 'Acgamer28', 24, 25), null)
+    assert.equal(
+      placementDropNote('SINGLE_ELIMINATION', 'Ween', 8, 9),
+      'Ween would be tied for 9th instead of tied for 5th.',
+    )
+  })
+
+  it('names a unique place without calling it a tie', () => {
+    assert.equal(
+      placementDropNote('DOUBLE_ELIMINATION', 'Sprinkle', 4, 5),
+      'Sprinkle would be tied for 5th instead of 4th.',
+    )
+  })
+
+  it('stays quiet for a format without seed placement tiers', () => {
+    assert.equal(placementDropNote('ROUND_ROBIN', 'Acgamer28', 24, 25), null)
+    assert.equal(placementDropNote(null, 'Acgamer28', 24, 25), null)
+  })
+
+  it('puts the drop on the suggestion that crosses a double-elim tier', () => {
+    const seeds = [
+      phaseSeed(1, '10', 'A'),
+      phaseSeed(2, '20', 'B'),
+      phaseSeed(3, '30', 'C'),
+      phaseSeed(4, '40', 'D'),
+    ]
+    const sets = [
+      phaseSet('hot', 'Winners Round 1', [
+        phaseSlot({ slotIndex: 1, seedNum: 1, entrantId: 'e1', playerId: '10', gamerTag: 'A' }),
+        phaseSlot({ slotIndex: 2, seedNum: 4, entrantId: 'e4', playerId: '40', gamerTag: 'D' }),
+      ]),
+    ]
+    const moves = listSuggestedMoves({
+      seeds,
+      sets,
+      daysByPair: new Map([['10|40', 1]]),
+      focusSetId: 'hot',
+      bracketType: 'DOUBLE_ELIMINATION',
+      pairHeat: (a, b) => {
+        if (pairKey(a, b) === '10|40') return { ok: true, heat: 1 }
+        return { missing: true }
+      },
+    })
+    const notes = moves.flatMap((move) => move.placementNotes)
+    assert.ok(notes.includes('C would be 4th instead of 3rd.'))
+    assert.equal(notes.some((note) => note.startsWith('D would be')), false)
   })
 })
 
