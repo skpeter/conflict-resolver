@@ -42,6 +42,13 @@ function winnersFinalIndex(allSets: PhaseSet[]): number | null {
   return best
 }
 
+/** One pass over the bracket. Suggestion search reads this instead of rebuilding it per set. */
+export function roundIndexTable(allSets: PhaseSet[]): Map<string, number> {
+  const table = new Map<string, number>()
+  for (const set of allSets) table.set(set.id, roundIndex(set, allSets))
+  return table
+}
+
 export function roundIndex(set: PhaseSet, allSets: PhaseSet[]): number {
   const text = set.fullRoundText ?? ''
   if (/grand final reset/i.test(text)) {

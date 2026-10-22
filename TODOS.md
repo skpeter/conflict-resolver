@@ -50,4 +50,16 @@
 **Priority:** P3
 **Depends on:** A real bracket where two accounts for one person show up
 
+### A full bracket's history walk is slow
+
+**What:** A 38-player double-elim (371 pairs) takes many minutes before every set leaves "checking".
+
+**Why:** Each pair is two start.gg lookups, and the client stays under 80 requests per minute. Heat now shows as each pair settles, but the last pairs still wait.
+
+**Context:** Found by /qa on 2026-10-20 against Gould St Gauntlet 27. The blank heat was a separate clock bug and is fixed. On 2026-10-21, St. George Scramble 104 showed a 100-set lookup matching receipts in one call per pair (143 calls instead of 364). Alias batches of 8, split in half when a reply contains more than 1000 objects, then matched those receipts in 25 calls for 146 pairs. The page uses that lookup. Do not raise the 80-request cap until start.gg's real limit is known. Caching across events is the other TODO above.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** Nothing
+
 ## Completed

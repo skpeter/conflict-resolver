@@ -1,11 +1,15 @@
 import {
   ELIM_BRACKET_TYPES,
+  HISTORY_PAGE_SIZE,
   ageDays,
   classifyHistoryPage,
   fillMissingSeedNums,
+  historyAsOf,
   orderedPlayerIds,
   pickReceiptClock,
   setClock,
+  shouldIgnoreLaterMeetings,
+  startGgPathSegment,
 } from '../rematch/index.ts'
 import { exactDayCount, localCalendarDate } from '../rematch/receipt.ts'
 import type {
@@ -35,6 +39,11 @@ export type LoadedPhase = {
   sets: PhaseSet[]
   singlesOnly: boolean
   elimination: boolean
+  /** Event start when that start is already past, otherwise the load-time clock. */
+  asOfMs: number
+  /** Captured at load so render does not read the clock again. */
+  ignoreLaterMeetings: boolean
+  eventId: string | null
 }
 
 type SeedNode = {
@@ -72,7 +81,7 @@ type SetNode = {
   }>
 }
 
-type H2HNode = {
+export type H2HNode = {
   id: string
   state: number
   completedAt: number | null
@@ -80,10 +89,11 @@ type H2HNode = {
   fullRoundText: string | null
   winnerId: string | null
   event: {
+    id: string | number
     name: string
     slug: string
     startAt: number | null
-    tournament: { slug: string } | null
+    tournament: { slug: string; name?: string | null } | null
   } | null
   slots: Array<{
     entrant: {
@@ -101,7 +111,9 @@ export async function listEliminationPhases(
   tournamentSlug: string,
   eventSlug: string,
 ): Promise<{ eventName: string; phases: PhaseInfo[]; allPhases: PhaseInfo[] }> {
-  const slug = `tournament/${tournamentSlug}/event/${eventSlug}`
+  const tournament = startGgPathSegment(tournamentSlug, 'tournament')
+  const event = startGgPathSegment(eventSlug, 'event')
+  const slug = `tournament/${tournament}/event/${event}`
   const data = await client.request<{
     event: {
       name: string
@@ -122,39 +134,47 @@ export async function loadPhase(
   client: StartGgClient,
   phaseId: string,
 ): Promise<LoadedPhase> {
-  const seeds = await paginateSeeds(client, phaseId)
+  const { seeds, eventId, eventStartAt } = await paginateSeeds(client, phaseId)
   const { phase, sets } = await paginateSets(client, phaseId)
   const singlesOnly = seeds.every((s) => s.participantCount <= 1)
   const elimination = ELIM_BRACKET_TYPES.has(phase.bracketType)
+  const nowMs = Date.now()
+  const asOfMs = historyAsOf(startGgUnixToMs(eventStartAt), nowMs)
   return {
     phase,
     seeds,
     sets: fillMissingSeedNums(sets, seeds),
     singlesOnly,
     elimination,
+    asOfMs,
+    ignoreLaterMeetings: shouldIgnoreLaterMeetings(asOfMs, nowMs),
+    eventId,
   }
 }
 
 async function paginateSeeds(
   client: StartGgClient,
   phaseId: string,
-): Promise<SeedSlot[]> {
+): Promise<{ seeds: SeedSlot[]; eventId: string | null; eventStartAt: number | null }> {
   const out: SeedSlot[] = []
   let page = 1
-  let phaseName = ''
-  let bracketType = ''
+  let eventId: string | null = null
+  let eventStartAt: number | null = null
   while (true) {
     const data = await client.request<{
       phase: {
         id: string
         name: string
         bracketType: string
+        event: { id: string | number; startAt: number | null } | null
         seeds: { nodes: SeedNode[] } | null
       } | null
     }>(PHASE_SEEDS, { phaseId, page })
     if (!data.phase) throw new Error('Phase not found')
-    phaseName = data.phase.name
-    bracketType = data.phase.bracketType
+    if (page === 1) {
+      eventId = data.phase.event?.id != null ? String(data.phase.event.id) : null
+      eventStartAt = data.phase.event?.startAt ?? null
+    }
     const nodes = data.phase.seeds?.nodes ?? []
     for (const n of nodes) {
       const parts = n.entrant?.participants ?? []
@@ -170,9 +190,7 @@ async function paginateSeeds(
     if (nodes.length < 32) break
     page += 1
   }
-  void phaseName
-  void bracketType
-  return out
+  return { seeds: out, eventId, eventStartAt }
 }
 
 async function paginateSets(
@@ -266,6 +284,12 @@ export type PairHistoryResult =
  * Two parallel lookups: completed state [3], unfinished [2,4,6].
  * Each walks at most 5 pages. Full fifth page still in window → incomplete.
  */
+export type HistoryFetchOptions = {
+  perPage?: number
+  /** One lookup for completed and unfinished states. Baseline keeps them split. */
+  combineStates?: boolean
+}
+
 export async function fetchPairHistory(
   client: StartGgClient,
   playerA: string,
@@ -273,8 +297,38 @@ export async function fetchPairHistory(
   nowMs: number,
   timeZone: string,
   prior?: LookupCache,
+  excludeEventId?: string | null,
+  options?: HistoryFetchOptions,
 ): Promise<PairHistoryResult> {
   const { lowerId, higherId } = orderedPlayerIds(playerA, playerB)
+  const perPage = options?.perPage ?? HISTORY_PAGE_SIZE
+  if (options?.combineStates) {
+    const combined = await walkLookup(
+      client,
+      lowerId,
+      higherId,
+      [2, 3, 4, 6],
+      nowMs,
+      perPage,
+    )
+    const completedSets = combined.sets.filter((set) => set.state === 3)
+    const unfinishedSets = combined.sets.filter((set) => set.state !== 3)
+    return resultFromLookups(
+      {
+        sets: completedSets,
+        failed: combined.failed,
+        incomplete: combined.incomplete,
+      },
+      {
+        sets: unfinishedSets,
+        failed: combined.failed,
+        incomplete: combined.incomplete,
+      },
+      nowMs,
+      timeZone,
+      excludeEventId,
+    )
+  }
   const [completed, unfinished] = await Promise.all([
     prior?.completed
       ? Promise.resolve({
@@ -282,16 +336,32 @@ export async function fetchPairHistory(
           failed: false,
           incomplete: false,
         })
-      : walkLookup(client, lowerId, higherId, [3], nowMs),
+      : walkLookup(client, lowerId, higherId, [3], nowMs, perPage),
     prior?.unfinished
       ? Promise.resolve({
           sets: prior.unfinished,
           failed: false,
           incomplete: false,
         })
-      : walkLookup(client, lowerId, higherId, [2, 4, 6], nowMs),
+      : walkLookup(client, lowerId, higherId, [2, 4, 6], nowMs, perPage),
   ])
 
+  return resultFromLookups(
+    completed,
+    unfinished,
+    nowMs,
+    timeZone,
+    excludeEventId,
+  )
+}
+
+function resultFromLookups(
+  completed: { sets: HistorySet[]; failed: boolean; incomplete: boolean },
+  unfinished: { sets: HistorySet[]; failed: boolean; incomplete: boolean },
+  nowMs: number,
+  timeZone: string,
+  excludeEventId?: string | null,
+): PairHistoryResult {
   const cache: LookupCache = {
     completed: completed.failed || completed.incomplete ? null : completed.sets,
     unfinished: unfinished.failed || unfinished.incomplete ? null : unfinished.sets,
@@ -305,13 +375,13 @@ export async function fetchPairHistory(
     return {
       kind: 'history-failed',
       label,
-      context: receiptForSets(completed.sets, true, nowMs, timeZone),
+      context: receiptForSets(completed.sets, true, nowMs, timeZone, excludeEventId),
       cache,
     }
   }
 
-  const candidates = candidatesFrom(completed.sets, true).concat(
-    candidatesFrom(unfinished.sets, false),
+  const candidates = candidatesFrom(completed.sets, true, excludeEventId).concat(
+    candidatesFrom(unfinished.sets, false, excludeEventId),
   )
   const picked = pickReceiptClock(
     nowMs,
@@ -335,9 +405,32 @@ export async function fetchPairHistory(
   return { kind: 'heat', heatDays: days, receipt }
 }
 
-function candidatesFrom(sets: HistorySet[], fromCompleted: boolean) {
+export function receiptFromHistorySets(
+  sets: HistorySet[],
+  nowMs: number,
+  timeZone: string,
+  excludeEventId?: string | null,
+  incomplete = false,
+): PairHistoryResult {
+  const completed = sets.filter((set) => set.state === 3)
+  const unfinished = sets.filter((set) => set.state !== 3)
+  return resultFromLookups(
+    { sets: completed, failed: false, incomplete },
+    { sets: unfinished, failed: false, incomplete },
+    nowMs,
+    timeZone,
+    excludeEventId,
+  )
+}
+
+function candidatesFrom(
+  sets: HistorySet[],
+  fromCompleted: boolean,
+  excludeEventId?: string | null,
+) {
   const out: Array<{ clockMs: number; fromCompleted: boolean; set: HistorySet }> = []
   for (const set of sets) {
+    if (excludeEventId && set.eventId === excludeEventId) continue
     const clock = setClock({
       completedAt: set.completedAt,
       eventStartAt: set.eventStartAt,
@@ -353,8 +446,9 @@ function receiptForSets(
   fromCompleted: boolean,
   nowMs: number,
   timeZone: string,
+  excludeEventId?: string | null,
 ): Receipt | null {
-  const candidates = candidatesFrom(sets, fromCompleted)
+  const candidates = candidatesFrom(sets, fromCompleted, excludeEventId)
   const picked = pickReceiptClock(
     nowMs,
     candidates.map((c) => ({
@@ -383,6 +477,7 @@ function toReceipt(
     setId: set.id,
     eventName: set.eventName,
     eventSlug: set.eventSlug,
+    tournamentName: set.tournamentName,
     tournamentSlug: set.tournamentSlug,
     roundText: set.fullRoundText ?? '',
     winnerTag,
@@ -398,6 +493,7 @@ async function walkLookup(
   higherId: string,
   state: number[],
   nowMs: number,
+  perPage = HISTORY_PAGE_SIZE,
 ): Promise<{
   sets: HistorySet[]
   failed: boolean
@@ -414,13 +510,14 @@ async function walkLookup(
         playerId: lowerId,
         opponentId: higherId,
         page,
+        perPage,
         state,
       })
       const nodes = data.player?.sets?.nodes ?? []
       const mapped = nodes
-        .map(mapH2H)
+        .map(mapHistorySet)
         .filter((s): s is HistorySet => s != null)
-      // Skip team sets (not exactly one participant per side) — mapH2H returns null
+      // Skip team sets (not exactly one participant per side) — mapHistorySet returns null
       sets.push(...mapped)
 
       const clocksMs = mapped.map((s) => {
@@ -430,7 +527,13 @@ async function walkLookup(
         })
         return clock?.clockMs ?? null
       })
-      const decision = classifyHistoryPage(page, nodes.length, clocksMs, nowMs)
+      const decision = classifyHistoryPage(
+        page,
+        nodes.length,
+        clocksMs,
+        nowMs,
+        perPage,
+      )
       if (decision === 'incomplete') {
         return { sets, failed: false, incomplete: true }
       }
@@ -444,7 +547,17 @@ async function walkLookup(
   return { sets, failed: false, incomplete: false }
 }
 
-function mapH2H(n: H2HNode): HistorySet | null {
+/**
+ * start.gg clocks are unix seconds. A value already in milliseconds
+ * (1e12 or more) is left alone so a caller that pre-converted stays valid.
+ */
+function startGgUnixToMs(value: number | null): number | null {
+  if (value == null) return null
+  if (Math.abs(value) < 1_000_000_000_000) return value * 1000
+  return value
+}
+
+export function mapHistorySet(n: H2HNode): HistorySet | null {
   const slots = (n.slots ?? []).map((s) => {
     const parts = s.entrant?.participants ?? []
     if (parts.length !== 1) return null
@@ -456,18 +569,20 @@ function mapH2H(n: H2HNode): HistorySet | null {
   })
   if (slots.some((s) => s == null)) return null
   if (slots.length !== 2) return null
-  const eventSlug = n.event?.slug?.split('/').pop() ?? n.event?.slug ?? ''
+  const eventSlug = startGgPathSegment(n.event?.slug ?? '', 'event')
   return {
     id: String(n.id),
     state: n.state,
-    completedAt: n.completedAt,
-    startedAt: n.startedAt,
+    completedAt: startGgUnixToMs(n.completedAt),
+    startedAt: startGgUnixToMs(n.startedAt),
     fullRoundText: n.fullRoundText,
     winnerId: n.winnerId != null ? String(n.winnerId) : null,
     eventName: n.event?.name ?? '',
+    eventId: n.event?.id != null ? String(n.event.id) : null,
     eventSlug,
-    eventStartAt: n.event?.startAt ?? null,
-    tournamentSlug: n.event?.tournament?.slug ?? '',
+    eventStartAt: startGgUnixToMs(n.event?.startAt ?? null),
+    tournamentName: n.event?.tournament?.name ?? '',
+    tournamentSlug: startGgPathSegment(n.event?.tournament?.slug ?? '', 'tournament'),
     slots: slots as HistorySet['slots'],
   }
 }

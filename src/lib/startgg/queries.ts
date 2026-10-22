@@ -19,6 +19,7 @@ query PhaseSeeds($phaseId: ID!, $page: Int!) {
     id
     name
     bracketType
+    event { id startAt }
     seeds(query: { page: $page, perPage: 32 }) {
       pageInfo { totalPages }
       nodes {
@@ -70,34 +71,39 @@ query PhaseSets($phaseId: ID!, $page: Int!) {
 }
 `
 
+export const HISTORY_SET_FIELDS = `
+  id
+  state
+  completedAt
+  startedAt
+  fullRoundText
+  winnerId
+  event {
+    id
+    name
+    slug
+    startAt
+    tournament { slug name }
+  }
+  slots {
+    entrant {
+      id
+      participants {
+        gamerTag
+        player { id }
+      }
+    }
+  }
+`
+
 export const H2H_SETS = `
-query HeadToHead($playerId: ID!, $opponentId: ID!, $page: Int!, $state: [Int]) {
+query HeadToHead($playerId: ID!, $opponentId: ID!, $page: Int!, $perPage: Int!, $state: [Int]) {
   player(id: $playerId) {
     id
-    sets(page: $page, perPage: 5, opponentId: $opponentId, filters: { state: $state }) {
+    sets(page: $page, perPage: $perPage, opponentId: $opponentId, filters: { state: $state }) {
       pageInfo { totalPages }
       nodes {
-        id
-        state
-        completedAt
-        startedAt
-        fullRoundText
-        winnerId
-        event {
-          name
-          slug
-          startAt
-          tournament { slug }
-        }
-        slots {
-          entrant {
-            id
-            participants {
-              gamerTag
-              player { id }
-            }
-          }
-        }
+        ${HISTORY_SET_FIELDS}
       }
     }
   }

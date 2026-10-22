@@ -11,6 +11,7 @@ export type Receipt = {
   setId: string
   eventName: string
   eventSlug: string
+  tournamentName: string
   tournamentSlug: string
   roundText: string
   winnerTag: string | null
@@ -57,8 +58,10 @@ export type HistorySet = {
   fullRoundText: string | null
   winnerId: string | null
   eventName: string
+  eventId: string | null
   eventSlug: string
   eventStartAt: number | null
+  tournamentName: string
   tournamentSlug: string
   slots: Array<{
     gamerTag: string | null
@@ -74,7 +77,15 @@ export type SuggestedMove = {
   entrantTag: string
   playerId: string
   shift: 1 | 2
+  /** Everyone else who changes seeds, from the neighbor out to the destination. */
+  shifted: Array<{ tag: string; seedNumFrom: number; seedNumTo: number }>
+  /** Hottest heat anywhere on the bracket after this slide. */
   newHottest: number
+  /** Heat of the selected set before and after the slide. Null when no set is selected. */
+  setHeatBefore: number | null
+  setHeatAfter: number | null
+  /** Players this slide moves into a worse placement tier for this bracket format. */
+  placementNotes: string[]
   seedMapping: Array<{ seedId: string; seedNum: number }>
   preview: PreviewRow[]
   expected: Array<{ seedKey: string; players: string; heat: number }>
