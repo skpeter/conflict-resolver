@@ -1,0 +1,18 @@
+## Learned User Preferences
+
+- Score a rematch by how recently that pair played and how early the set sits in the bracket. The organizer view is a heat map; tapping a set opens the last meeting.
+- When checking a past event, score history as of that event's start and ignore later meetings and that event's own sets. Upcoming events stay as of now. Completed events are how the algorithm gets validated.
+- Later rounds must include projected matchups from the initial seeding for both past and upcoming events. start.gg does not return those projections, and a later slot that is still empty still needs heat so round 2 and beyond can be seeded.
+- Show seed suggestions only for the selected set, and keep them small enough that they do not drastically change the original seeding. Push seeds only while no set in the phase has started; after that, edits are manual, and the bracket is never reset.
+- Last-meeting details include the tournament name beside the event name. Set links go directly to the set (`/tournament/{slug}/event/{event}/set/{id}`) and must not add a second `tournament/` segment.
+- Keep start.gg tokens out of chat and out of git. For a live API run, read the gitignored `startgg.token.local` file and do not print it. A token set only in the user's own PowerShell window is not visible to the agent shell.
+- Publish the static app with GitHub Actions to GitHub Pages.
+
+## Learned Workspace Facts
+
+- Conflict Resolver is the public Vite/React app at https://github.com/skpeter/conflict-resolver, published from `main` to https://skpeter.github.io/conflict-resolver/. Version 1 is a one-page singles single-elim or double-elim audit with no account and no stored bracket; each visit refetches start.gg.
+- The token stays in tab memory and is sent only to `https://api.start.gg/gql/alpha`. Only the two Advanced multipliers are stored in `localStorage`.
+- start.gg `completedAt` and `event.startAt` are unix seconds. The heat window is 60 days in milliseconds. Convert seconds (values under 1e12) before comparing, or every meeting looks older than the window and shows no heat.
+- The start.gg client stays at or under 80 requests per 60 seconds. A full bracket history walk takes many minutes. Do not raise that cap until start.gg's real limit is known, and do not replace the current lookup until another transport returns the same receipts with fewer calls.
+- start.gg omits bye matches and seats those players in the next round. Projection has to follow the prerequisite graph, or later pairs never appear.
+- Seed writeback uses `updatePhaseSeeding` and only while the phase is unplayed. Once the bracket has started, start.gg locks seeding, and resetting the bracket clears reported scores.

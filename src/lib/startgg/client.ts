@@ -5,6 +5,13 @@ export type GqlError = {
   extensions?: { code?: string }
 }
 
+/** start.gg rejects a response that contains more than 1000 objects. Retrying the same query returns the same error. */
+export function isQueryComplexityError(err: unknown): boolean {
+  const message =
+    typeof err === 'string' ? err : err instanceof Error ? err.message : String(err)
+  return /complexity is too high|1000 objects/i.test(message)
+}
+
 export class StartGgClient {
   private token: string
   private timestamps: number[] = []
@@ -111,6 +118,7 @@ export class StartGgClient {
         await sleep(2000)
         return this.postWithRetry(query, variables, retried)
       }
+      if (isQueryComplexityError(message)) throw new Error(message)
       if (!retried) return this.postWithRetry(query, variables, true)
       throw new Error(message)
     }

@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "node --test --experimental-strip-types test/rematch.test.ts test/rematch.regression-1.test.ts"
+    "test": "node --test --experimental-strip-types test/rematch.test.ts test/rematch.regression-1.test.ts test/history-benchmark.test.ts"
   },
   "dependencies": {
     "@fontsource/source-sans-3": "^5.3.1",

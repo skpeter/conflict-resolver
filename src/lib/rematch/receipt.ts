@@ -20,9 +20,40 @@ export function exactDayCount(days: number): string {
   return days.toFixed(6).replace(/\.?0+$/, '')
 }
 
+/**
+ * Last path segment, or the segment after `tournament` / `event` when the
+ * API already returned a prefixed slug.
+ */
+export function startGgPathSegment(
+  value: string,
+  marker: 'tournament' | 'event',
+): string {
+  const parts = value.split('/').filter(Boolean)
+  const idx = parts.lastIndexOf(marker)
+  if (idx >= 0 && parts[idx + 1]) return parts[idx + 1]
+  return parts[parts.length - 1] ?? ''
+}
+
 export function receiptEventUrl(
   tournamentSlug: string,
   eventSlug: string,
 ): string {
-  return `https://www.start.gg/tournament/${tournamentSlug}/event/${eventSlug}`
+  const tournament = startGgPathSegment(tournamentSlug, 'tournament')
+  const event = startGgPathSegment(eventSlug, 'event')
+  return `https://www.start.gg/tournament/${tournament}/event/${event}`
+}
+
+export function receiptSetUrl(
+  tournamentSlug: string,
+  eventSlug: string,
+  setId: string,
+): string {
+  return `${receiptEventUrl(tournamentSlug, eventSlug)}/set/${setId}`
+}
+
+export function receiptHeading(tournamentName: string, eventName: string): string {
+  const tournament = tournamentName.trim()
+  const event = eventName.trim()
+  if (tournament && event) return `${tournament} · ${event}`
+  return tournament || event
 }

@@ -1,3 +1,4 @@
+import { projectBracket, projectedPlayerIds } from './project.ts'
 import type { PhaseSet, SeedSlot } from './types.ts'
 
 export function pairKey(a: string, b: string): string {
@@ -13,16 +14,9 @@ export function orderedPlayerIds(
     : { lowerId: b, higherId: a }
 }
 
-function playersOnSet(set: PhaseSet): string[] {
-  const ids: string[] = []
-  for (const slot of set.slots) {
-    if (slot.playerId) ids.push(slot.playerId)
-  }
-  return ids
-}
-
 /**
- * Pairs on the current bracket plus pairs a legal 1-2 slot move would create.
+ * Pairs on the current bracket, including unresolved sets filled from the
+ * prerequisite graph, plus pairs a legal 1-2 slot move would create.
  */
 export function buildPairList(
   sets: PhaseSet[],
@@ -39,10 +33,15 @@ export function buildPairList(
     out.push({ a, b })
   }
 
-  for (const set of sets) {
-    const ids = playersOnSet(set)
-    if (ids.length === 2) add(ids[0], ids[1])
+  function addProjected(mapping?: Map<number, SeedSlot> | null) {
+    for (const row of projectBracket(sets, seeds, mapping)) {
+      if (!row.scoreable) continue
+      const ids = projectedPlayerIds(row.slots)
+      if (ids.length === 2) add(ids[0], ids[1])
+    }
   }
+
+  addProjected(null)
 
   const ordered = [...seeds]
     .filter((s) => s.playerId && s.entrantId)
@@ -52,10 +51,7 @@ export function buildPairList(
     for (const delta of [-2, -1, 1, 2] as const) {
       const mapping = applySeedShift(ordered, seed.seedNum, delta)
       if (!mapping) continue
-      for (const set of sets) {
-        const after = playersAfterMove(set, mapping)
-        if (after.length === 2) add(after[0], after[1])
-      }
+      addProjected(mapping)
     }
   }
 
@@ -84,19 +80,6 @@ export function applySeedShift(
   }
   result.set(to, mover)
   return result
-}
-
-function playersAfterMove(
-  set: PhaseSet,
-  seedToHolder: Map<number, SeedSlot>,
-): string[] {
-  const ids: string[] = []
-  for (const slot of set.slots) {
-    if (slot.seedNum == null) continue
-    const holder = seedToHolder.get(slot.seedNum)
-    if (holder?.playerId) ids.push(holder.playerId)
-  }
-  return ids
 }
 
 export function hottestHeat(heats: number[]): number {

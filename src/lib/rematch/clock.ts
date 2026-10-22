@@ -1,6 +1,13 @@
 /** Window length in milliseconds: 60 * 24 hours. */
 export const WINDOW_MS = 60 * 24 * 60 * 60 * 1000
 
+/** Show the "meetings after this date" note only once the loaded clock is this far behind now. */
+export const MEETING_NOTE_LAG_MS = 60_000
+
+export function shouldIgnoreLaterMeetings(asOfMs: number, nowMs: number): boolean {
+  return asOfMs < nowMs - MEETING_NOTE_LAG_MS
+}
+
 export type ClockSource = {
   completedAt: number | null
   eventStartAt: number | null
@@ -30,6 +37,15 @@ export function setClock(source: ClockSource): {
 export function ageDays(nowMs: number, clockMs: number): number | null {
   if (clockMs > nowMs) return null
   return (nowMs - clockMs) / 86_400_000
+}
+
+/**
+ * When the loaded event has already started, score meetings as of that start.
+ * Later events then fall outside the window. An upcoming event stays as of now.
+ */
+export function historyAsOf(eventStartMs: number | null, nowMs: number): number {
+  if (eventStartMs == null || eventStartMs > nowMs) return nowMs
+  return eventStartMs
 }
 
 /** Inclusive window: at or under WINDOW_MS. One millisecond older does not count. */

@@ -11,21 +11,27 @@ import {
   heatBand,
   isAuthError,
   listSuggestedMoves,
+  movesForSelectedSet,
+  localCalendarDate,
   pairKey,
   phaseIsUnstarted,
   playerKeyOf,
-  receiptEventUrl,
+  projectBracket,
+  projectedPlayerIds,
+  receiptHeading,
+  receiptSetUrl,
   resolveStartGgLink,
   roundIndex,
   seedKeyOf,
   shouldApplyGeneration,
   type BracketRow,
-  type PhaseSet,
+  type ProjectedSlot,
   type Receipt,
   type SuggestedMove,
 } from '@/lib/rematch/index.ts'
 import { cn } from '@/lib/utils'
 import { StartGgClient } from '@/lib/startgg/client'
+import { WIDE_PAGE_SIZE, loadAliasPairHistories } from '@/lib/startgg/historyBenchmark'
 import {
   fetchPairHistory,
   listEliminationPhases,
@@ -85,6 +91,7 @@ export default function App() {
   const [loaded, setLoaded] = useState<LoadedPhase | null>(null)
   const [pairs, setPairs] = useState<Map<string, PairState>>(new Map())
   const [selectedMoveId, setSelectedMoveId] = useState<string | null>(null)
+  const [selectedSetId, setSelectedSetId] = useState<string | null>(null)
   const [receiptSetId, setReceiptSetId] = useState<string | null>(null)
   const [writing, setWriting] = useState(false)
   const [writeBlocked, setWriteBlocked] = useState(false)
@@ -99,6 +106,8 @@ export default function App() {
 
   const generation = useRef(0)
   const visitMap = useRef(new Map<string, PairState>())
+  const visitAsOf = useRef<number | null>(null)
+  const visitEventId = useRef<string | null>(null)
   const clientRef = useRef<StartGgClient | null>(null)
   const writeGate = useRef({ inFlight: false })
 
@@ -117,6 +126,7 @@ export default function App() {
     setLoaded(null)
     setPairs(new Map())
     setSelectedMoveId(null)
+    setSelectedSetId(null)
     setReceiptSetId(null)
     setWriteBlocked(false)
     setPairProgress({ done: 0, total: 0 })
@@ -139,6 +149,11 @@ export default function App() {
       }
 
       setStatus(null)
+      if (visitAsOf.current !== phase.asOfMs || visitEventId.current !== phase.eventId) {
+        visitMap.current.clear()
+        visitAsOf.current = phase.asOfMs
+        visitEventId.current = phase.eventId
+      }
       const list = buildPairList(phase.sets, phase.seeds)
       setPairProgress({ done: 0, total: list.length })
 
@@ -155,22 +170,21 @@ export default function App() {
       }
       setPairs(new Map(next))
 
-      const nowMs = clockNow()
+      const nowMs = phase.asOfMs
       let done = [...next.values()].filter((p) => p.status !== 'checking').length
       setPairProgress({ done, total: list.length })
 
       setLoadGen(gen)
-      await Promise.all(
-        list.map(async ({ a, b }) => {
-          const key = pairKey(a, b)
-          if (next.get(key)?.status !== 'checking') return
-          const result = await fetchPairHistory(
-            clientRef.current!,
-            a,
-            b,
-            nowMs,
-            timeZone,
-          )
+      const pending = list.filter(
+        ({ a, b }) => next.get(pairKey(a, b))?.status === 'checking',
+      )
+      await loadAliasPairHistories(
+        clientRef.current!,
+        pending,
+        nowMs,
+        timeZone,
+        phase.eventId,
+        (key, result) => {
           if (!shouldApplyGeneration(gen, generation.current)) return
           const state = pairStateFromResult(result)
           visitMap.current.set(key, state)
@@ -181,7 +195,7 @@ export default function App() {
           })
           done += 1
           setPairProgress({ done, total: list.length })
-        }),
+        },
       )
     } catch (err) {
       if (!shouldApplyGeneration(gen, generation.current)) return
@@ -275,26 +289,58 @@ export default function App() {
     return map
   }, [pairs])
 
+  const projectedRows = useMemo(() => {
+    if (!loaded) return []
+    return projectBracket(loaded.sets, loaded.seeds)
+  }, [loaded])
+
   const scoredSets = useMemo(() => {
     if (!loaded) return []
-    return loaded.sets.map((set) => {
-      const ids = set.slots.map((s) => s.playerId)
-      const missingId = set.slots.some((s) => s.entrantId && !s.playerId)
+    return projectedRows.map((row) => {
+      const set = row.set
+      const slots = row.slots
+      const missingId = set.slots.some((slot) => slot.entrantId && !slot.playerId)
       if (missingId) {
-        return { set, band: 'plain' as const, heat: 0, label: 'no player id', state: 'ready' as const }
+        return {
+          set,
+          slots,
+          projected: row.projected,
+          band: 'plain' as const,
+          heat: 0,
+          label: 'no player id',
+          state: 'ready' as const,
+        }
       }
-      const filled = ids.filter(Boolean) as string[]
-      if (filled.length !== 2) {
-        return { set, band: 'plain' as const, heat: 0, label: null, state: 'ready' as const }
+      if (!row.scoreable) {
+        return {
+          set,
+          slots,
+          projected: row.projected,
+          band: 'plain' as const,
+          heat: 0,
+          label: null,
+          state: 'ready' as const,
+        }
       }
+      const filled = projectedPlayerIds(slots)
       const key = pairKey(filled[0], filled[1])
       const pair = pairs.get(key)
       if (!pair || pair.status === 'checking') {
-        return { set, band: 'plain' as const, heat: 0, label: 'checking', state: 'checking' as const }
+        return {
+          set,
+          slots,
+          projected: row.projected,
+          band: 'plain' as const,
+          heat: 0,
+          label: 'checking',
+          state: 'checking' as const,
+        }
       }
       if (pair.status === 'failed') {
         return {
           set,
+          slots,
+          projected: row.projected,
           band: 'plain' as const,
           heat: 0,
           label: pair.label,
@@ -306,6 +352,8 @@ export default function App() {
       if (pair.status === 'cold' || pair.status === 'no-player-id') {
         return {
           set,
+          slots,
+          projected: row.projected,
           band: 'plain' as const,
           heat: 0,
           label: pair.status === 'no-player-id' ? 'no player id' : null,
@@ -313,7 +361,15 @@ export default function App() {
         }
       }
       if (pair.status !== 'ready') {
-        return { set, band: 'plain' as const, heat: 0, label: null, state: 'ready' as const }
+        return {
+          set,
+          slots,
+          projected: row.projected,
+          band: 'plain' as const,
+          heat: 0,
+          label: null,
+          state: 'ready' as const,
+        }
       }
       const ri = roundIndex(set, loaded.sets)
       const heat = computeHeat(
@@ -325,6 +381,8 @@ export default function App() {
       const band = heatBand(heat)
       return {
         set,
+        slots,
+        projected: row.projected,
         band,
         heat,
         label: band === 'plain' ? null : band,
@@ -333,7 +391,7 @@ export default function App() {
         days: pair.days,
       }
     })
-  }, [loaded, pairs, recencyMultiplier, roundMultiplier])
+  }, [loaded, pairs, projectedRows, recencyMultiplier, roundMultiplier])
 
   const sortedSets = useMemo(() => {
     return [...scoredSets].sort((a, b) => b.heat - a.heat)
@@ -342,21 +400,33 @@ export default function App() {
   const historyPending = [...pairs.values()].some((pair) => pair.status === 'checking')
 
   const moves: SuggestedMove[] = useMemo(() => {
-    if (!loaded) return []
+    if (!loaded || !selectedSetId) return []
     if ([...pairs.values()].some((p) => p.status === 'checking')) return []
     const finiteDays = new Map<string, number>()
     for (const [k, v] of daysByPair) {
       if (Number.isFinite(v)) finiteDays.set(k, v)
     }
-    return listSuggestedMoves({
-      seeds: loaded.seeds,
-      sets: loaded.sets,
-      pairHeat: pairLookup,
-      daysByPair: finiteDays,
-      recencyMultiplier,
-      roundMultiplier,
-    })
-  }, [loaded, pairs, daysByPair, pairLookup, recencyMultiplier, roundMultiplier])
+    return movesForSelectedSet(
+      selectedSetId,
+      listSuggestedMoves({
+        seeds: loaded.seeds,
+        sets: loaded.sets,
+        pairHeat: pairLookup,
+        daysByPair: finiteDays,
+        recencyMultiplier,
+        roundMultiplier,
+        focusSetId: selectedSetId,
+      }),
+    )
+  }, [
+    loaded,
+    pairs,
+    daysByPair,
+    pairLookup,
+    recencyMultiplier,
+    roundMultiplier,
+    selectedSetId,
+  ])
 
   const selectedMove = moves.find((m) => m.id === selectedMoveId) ?? null
 
@@ -415,9 +485,11 @@ export default function App() {
       clientRef.current,
       a,
       b,
-      clockNow(),
+      loaded?.asOfMs ?? clockNow(),
       timeZone,
       prior,
+      loaded?.eventId,
+      { perPage: WIDE_PAGE_SIZE, combineStates: true },
     )
     if (!shouldApplyGeneration(gen, generation.current)) return
     const state = pairStateFromResult(result)
@@ -558,6 +630,9 @@ export default function App() {
             {pairProgress.total > 0
               ? ` History ${pairProgress.done}/${pairProgress.total}.`
               : null}
+            {loaded.ignoreLaterMeetings
+              ? ` Meetings after ${localCalendarDate(loaded.asOfMs, timeZone)} are ignored.`
+              : null}
             {unstarted
               ? ' No set in this phase has started.'
               : ' A set has started — write is hidden.'}
@@ -588,10 +663,8 @@ export default function App() {
             ) : (
             <ul className="space-y-2">
               {sortedSets.map((row) => {
-                const selected = activeReceiptId === row.set.id
-                const players = row.set.slots
-                  .map((slot) => slot.playerId)
-                  .filter((id): id is string => Boolean(id))
+                const selected = selectedSetId === row.set.id
+                const players = projectedPlayerIds(row.slots)
                 const context = 'context' in row ? row.context : null
                 return (
                   <li key={row.set.id}>
@@ -608,25 +681,26 @@ export default function App() {
                       type="button"
                       className="min-h-11 w-full text-left"
                       onClick={() => {
+                        setSelectedSetId(row.set.id)
                         if (row.state === 'ready' && 'receipt' in row && row.receipt) {
                           setReceiptSetId(row.set.id)
                         }
                       }}
                     >
                       <div className="flex flex-wrap items-baseline gap-x-2 font-semibold">
-                        {row.set.slots.map((slot, index) => (
-                          <span key={slot.slotIndex}>
+                        {row.slots.map((slot, index) => (
+                          <span key={`${row.set.id}-${index}`}>
                             {index > 0 ? (
                               <span className="mr-2 font-normal text-zinc-600">vs</span>
                             ) : null}
-                            {slot.gamerTag ?? (slot.entrantId ? 'unknown' : 'Bye')}
-                            {slot.seedNum != null ? (
-                              <span className="ml-2 font-normal text-zinc-600">
-                                seed {slot.seedNum}
-                              </span>
-                            ) : null}
+                            <SlotName slot={slot} />
                           </span>
                         ))}
+                        {row.projected ? (
+                          <span className="inline-block rounded border border-zinc-600 px-1.5 font-normal">
+                            projected
+                          </span>
+                        ) : null}
                         {row.label ? (
                           <span className="inline-block rounded border border-zinc-600 px-1.5 font-normal">
                             {row.label}
@@ -667,7 +741,7 @@ export default function App() {
             {activeReceipt && 'receipt' in activeReceipt && activeReceipt.receipt ? (
               <ReceiptBlock
                 receipt={activeReceipt.receipt}
-                set={activeReceipt.set}
+                names={entrantNames(activeReceipt.slots)}
               />
             ) : (
               <p className="mt-2 text-base text-zinc-600">
@@ -678,15 +752,19 @@ export default function App() {
 
           <section className="mt-4 rounded-md border border-zinc-400 bg-white p-3">
             <h2 className="text-base font-semibold">
-              Smallest move that cools the hot match
+              Moves for the selected set
             </h2>
-            {historyPending ? (
+            {!selectedSetId ? (
+              <p className="mt-2 text-base text-zinc-700">
+                Select a set to see moves that cool it.
+              </p>
+            ) : historyPending ? (
               <p className="mt-2 text-base text-zinc-700">
                 Still reading history. The move appears when every pair is settled.
               </p>
             ) : moves.length === 0 ? (
               <p className="mt-2 text-base text-zinc-700">
-                No move cools the hottest match.
+                No move cools this set without heating another.
               </p>
             ) : (
               <ul className="mt-2 space-y-2">
@@ -783,15 +861,41 @@ export default function App() {
   )
 }
 
+function entrantNames(slots: ProjectedSlot[]): string {
+  return slots
+    .map((slot) => {
+      if (slot.kind === 'player') return slot.gamerTag ?? 'player'
+      if (slot.kind === 'bye') return 'Bye'
+      return 'Unresolved'
+    })
+    .join(' vs ')
+}
+
+function SlotName({ slot }: { slot: ProjectedSlot }) {
+  if (slot.kind === 'bye') return 'Bye'
+  if (slot.kind === 'unresolved') return 'Unresolved'
+  return (
+    <>
+      {slot.gamerTag ?? 'unknown'}
+      {slot.seedNum != null ? (
+        <span className="ml-2 font-normal text-zinc-600">seed {slot.seedNum}</span>
+      ) : null}
+    </>
+  )
+}
+
 function ReceiptBlock({
   receipt,
-  set,
+  names,
 }: {
   receipt: Receipt
-  set: PhaseSet
+  names: string
 }) {
-  const names = set.slots.map((s) => s.gamerTag ?? 'player').join(' vs ')
-  const href = receiptEventUrl(receipt.tournamentSlug, receipt.eventSlug)
+  const href = receiptSetUrl(
+    receipt.tournamentSlug,
+    receipt.eventSlug,
+    receipt.setId,
+  )
   return (
     <div className="mt-2 text-base">
       <p className="font-semibold">{names}</p>
@@ -804,7 +908,7 @@ function ReceiptBlock({
         </div>
         <div>
           <dt className="text-zinc-500">Event</dt>
-          <dd>{receipt.eventName}</dd>
+          <dd>{receiptHeading(receipt.tournamentName, receipt.eventName)}</dd>
         </div>
         <div>
           <dt className="text-zinc-500">Round</dt>

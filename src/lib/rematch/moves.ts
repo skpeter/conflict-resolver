@@ -1,6 +1,12 @@
 import { computeHeat } from './heat.ts'
 import { applySeedShift, hottestHeat, pairKey } from './pairs.ts'
 import { playerKeyOf, seedKeyOf } from './preview.ts'
+import {
+  projectBracket,
+  projectedPlayerIds,
+  projectedSlotText,
+  type ProjectedSet,
+} from './project.ts'
 import { roundIndex } from './roundIndex.ts'
 import type {
   BracketRow,
@@ -17,49 +23,51 @@ export type PairHeatLookup = (
   b: string,
 ) => { ok: true; heat: number } | { failed: true } | { missing: true }
 
-function labelFor(
-  seedNum: number | null,
-  holder: SeedSlot | undefined,
-): string {
-  if (!holder?.playerId) {
-    if (seedNum == null) return 'bye (no seed)'
-    return 'bye'
-  }
-  return `${holder.gamerTag ?? 'player'} (seed ${seedNum})`
-}
-
-function playersForSet(
-  set: PhaseSet,
-  seedToHolder: Map<number, SeedSlot> | null,
-): Array<string | null> {
-  return set.slots.map((slot) => {
-    if (seedToHolder && slot.seedNum != null) {
-      return seedToHolder.get(slot.seedNum)?.playerId ?? null
-    }
-    return slot.playerId
-  })
-}
-
-function heatForPlayers(
-  players: Array<string | null>,
-  set: PhaseSet,
+function heatForRow(
+  row: ProjectedSet,
   allSets: PhaseSet[],
   pairHeat: PairHeatLookup,
   daysByPair: Map<string, number>,
   multipliers: { recency: number; round: number },
 ): { heat: number; failed: boolean } {
-  const filled = players.filter((p): p is string => Boolean(p))
+  if (!row.scoreable) return { heat: 0, failed: false }
+  const filled = projectedPlayerIds(row.slots)
   if (filled.length !== 2) return { heat: 0, failed: false }
   const lookup = pairHeat(filled[0], filled[1])
   if ('failed' in lookup) return { heat: 0, failed: true }
   if ('missing' in lookup) return { heat: 0, failed: false }
   const days = daysByPair.get(pairKey(filled[0], filled[1]))
   if (days == null) return { heat: lookup.heat, failed: false }
-  const ri = roundIndex(set, allSets)
+  const ri = roundIndex(row.set, allSets)
   return {
     heat: computeHeat(days, ri, multipliers.recency, multipliers.round),
     failed: false,
   }
+}
+
+function heatsBySet(
+  rows: ProjectedSet[],
+  sets: PhaseSet[],
+  pairHeat: PairHeatLookup,
+  daysByPair: Map<string, number>,
+  multipliers: { recency: number; round: number },
+): { heats: Map<string, number>; failed: boolean } {
+  const heats = new Map<string, number>()
+  for (const row of rows) {
+    const heat = heatForRow(row, sets, pairHeat, daysByPair, multipliers)
+    if (heat.failed) return { heats, failed: true }
+    heats.set(row.set.id, heat.heat)
+  }
+  return { heats, failed: false }
+}
+
+/** Suggestions stay hidden until the organizer selects one set. */
+export function movesForSelectedSet<T>(
+  selectedSetId: string | null,
+  moves: T[],
+): T[] {
+  if (!selectedSetId) return []
+  return moves
 }
 
 export function listSuggestedMoves(args: {
@@ -69,6 +77,8 @@ export function listSuggestedMoves(args: {
   daysByPair: Map<string, number>
   recencyMultiplier?: number
   roundMultiplier?: number
+  /** When set, the move must cool this set and must not heat any other set. */
+  focusSetId?: string | null
 }): SuggestedMove[] {
   const {
     seeds,
@@ -77,26 +87,26 @@ export function listSuggestedMoves(args: {
     daysByPair,
     recencyMultiplier = 1,
     roundMultiplier = 1,
+    focusSetId = null,
   } = args
   const multipliers = { recency: recencyMultiplier, round: roundMultiplier }
   const ordered = [...seeds]
     .filter((s) => s.entrantId)
     .sort((a, b) => a.seedNum - b.seedNum)
 
+  if (focusSetId && !sets.some((set) => set.id === focusSetId)) return []
+
+  const beforeRows = projectBracket(sets, seeds, null)
+  const before = heatsBySet(beforeRows, sets, pairHeat, daysByPair, multipliers)
+  if (before.failed) return []
   const currentHeats: number[] = []
-  for (const set of sets) {
-    const h = heatForPlayers(
-      playersForSet(set, null),
-      set,
-      sets,
-      pairHeat,
-      daysByPair,
-      multipliers,
-    )
-    if (h.failed) continue
-    currentHeats.push(h.heat)
+  for (const row of beforeRows) {
+    const heat = before.heats.get(row.set.id)
+    if (heat == null) continue
+    currentHeats.push(heat)
   }
   const currentHottest = hottestHeat(currentHeats)
+  const beforeById = new Map(beforeRows.map((row) => [row.set.id, row]))
 
   const candidates: SuggestedMove[] = []
 
@@ -106,78 +116,72 @@ export function listSuggestedMoves(args: {
       const mapping = applySeedShift(ordered, seed.seedNum, delta)
       if (!mapping) continue
 
-      let failed = false
+      const afterRows = projectBracket(sets, seeds, mapping)
+      const after = heatsBySet(afterRows, sets, pairHeat, daysByPair, multipliers)
+      if (after.failed) continue
+
       const afterHeats: number[] = []
       const preview: PreviewRow[] = []
       const expected: BracketRow[] = []
+      let worsened = false
+      let focusBefore = 0
+      let focusAfter = 0
+      let focusSeen = false
 
-      for (const set of sets) {
-        const beforePlayers = playersForSet(set, null)
-        const afterPlayers = playersForSet(set, mapping)
-        const before = heatForPlayers(
-          beforePlayers,
-          set,
-          sets,
-          pairHeat,
-          daysByPair,
-          multipliers,
+      for (const row of afterRows) {
+        const heat = after.heats.get(row.set.id) ?? 0
+        afterHeats.push(heat)
+        const previous = beforeById.get(row.set.id)
+        const previousHeat = before.heats.get(row.set.id) ?? 0
+        const afterIds = row.slots.map((slot) =>
+          slot.kind === 'player' ? slot.playerId : null,
         )
-        const after = heatForPlayers(
-          afterPlayers,
-          set,
-          sets,
-          pairHeat,
-          daysByPair,
-          multipliers,
+        const beforeIds = (previous?.slots ?? []).map((slot) =>
+          slot.kind === 'player' ? slot.playerId : null,
         )
-        if (before.failed || after.failed) {
-          failed = true
-          break
-        }
-        afterHeats.push(after.heat)
         expected.push({
-          seedKey: seedKeyOf(set),
-          players: playerKeyOf(afterPlayers),
-          heat: after.heat,
+          seedKey: seedKeyOf(row.set),
+          players: playerKeyOf(afterIds),
+          heat,
         })
 
-        const changed = set.slots.some((_, i) => beforePlayers[i] !== afterPlayers[i])
-        if (!changed) continue
+        if (focusSetId) {
+          if (row.set.id === focusSetId) {
+            focusSeen = true
+            focusBefore = previousHeat
+            focusAfter = heat
+          } else if (heat > previousHeat + 1e-9) {
+            worsened = true
+          }
+        }
 
-        const beforeFilled = beforePlayers.filter(Boolean).length
-        const afterFilled = afterPlayers.filter(Boolean).length
+        const beforeKey = playerKeyOf(beforeIds)
+        const afterKey = playerKeyOf(afterIds)
+        if (beforeKey === afterKey) continue
+
+        const beforeFilled = beforeIds.filter(Boolean).length
+        const afterFilled = afterIds.filter(Boolean).length
         let kind: PreviewRow['kind'] = 'heat'
         if ((beforeFilled < 2) !== (afterFilled < 2)) kind = 'bye-changed'
         else if (beforeFilled < 2 && afterFilled < 2) kind = 'bye-other'
 
-        const beforeLabels = set.slots.map((slot) =>
-          labelFor(
-            slot.seedNum,
-            slot.seedNum != null
-              ? ordered.find((s) => s.seedNum === slot.seedNum)
-              : undefined,
-          ),
-        )
-        const afterLabels = set.slots.map((slot) =>
-          labelFor(
-            slot.seedNum,
-            slot.seedNum != null ? mapping.get(slot.seedNum) : undefined,
-          ),
-        )
-
         preview.push({
-          setId: set.id,
-          before: beforeLabels.join(' vs '),
-          after: afterLabels.join(' vs '),
+          setId: row.set.id,
+          before: (previous?.slots ?? []).map(projectedSlotText).join(' vs '),
+          after: row.slots.map(projectedSlotText).join(' vs '),
           kind,
-          oldHeat: kind === 'heat' ? before.heat : 0,
-          newHeat: kind === 'heat' ? after.heat : 0,
+          oldHeat: kind === 'heat' ? previousHeat : 0,
+          newHeat: kind === 'heat' ? heat : 0,
         })
       }
 
-      if (failed) continue
+      if (focusSetId) {
+        if (!focusSeen || worsened) continue
+        if (!(focusAfter < focusBefore - 1e-9)) continue
+      }
+
       const newHottest = hottestHeat(afterHeats)
-      if (!(newHottest < currentHottest)) continue
+      if (!focusSetId && !(newHottest < currentHottest)) continue
 
       const seedMapping = [...seeds]
         .sort((a, b) => a.seedNum - b.seedNum)

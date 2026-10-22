@@ -12,6 +12,7 @@ import {
   exactDayCount,
   fillMissingSeedNums,
   heatBand,
+  historyAsOf,
   inWindow,
   localCalendarDate,
   orderedPlayerIds,
@@ -23,6 +24,12 @@ import {
   setClock,
   shouldApplyGeneration,
   listSuggestedMoves,
+  movesForSelectedSet,
+  projectBracket,
+  projectedPlayerIds,
+  receiptHeading,
+  receiptSetUrl,
+  shouldIgnoreLaterMeetings,
 } from '../src/lib/rematch/index.ts'
 import type { PhaseSet, SeedSlot } from '../src/lib/rematch/types.ts'
 
@@ -60,6 +67,20 @@ describe('clock', () => {
     const now = 1_000_000_000_000
     assert.equal(ageDays(now, now), 0)
     assert.equal(inWindow(now, now), true)
+  })
+
+  it('scores a past event as of its start and an upcoming event as of now', () => {
+    const now = 1_000_000_000_000
+    assert.equal(historyAsOf(null, now), now)
+    assert.equal(historyAsOf(now + DAY, now), now)
+    assert.equal(historyAsOf(now - 13 * DAY, now), now - 13 * DAY)
+  })
+
+  it('decides the cutoff note from the load-time clock', () => {
+    const now = 1_000_000_000_000
+    assert.equal(shouldIgnoreLaterMeetings(now, now), false)
+    assert.equal(shouldIgnoreLaterMeetings(now - 59_000, now), false)
+    assert.equal(shouldIgnoreLaterMeetings(now - 60_001, now), true)
   })
 
   it('keeps exactly 60*24h and drops one millisecond older', () => {
@@ -562,5 +583,249 @@ describe('link', () => {
       'https://start.gg/tournament/weeknight-42/event/singles/brackets/123456/0',
     )
     assert.deepEqual(bracket, { kind: 'bracket', phaseId: '123456' })
+  })
+})
+
+function phaseSeed(n: number, playerId: string, tag: string): SeedSlot {
+  return {
+    seedId: `s${n}`,
+    seedNum: n,
+    entrantId: `e${n}`,
+    playerId,
+    gamerTag: tag,
+    participantCount: 1,
+  }
+}
+
+function phaseSlot(
+  partial: Partial<PhaseSet['slots'][number]> & Pick<PhaseSet['slots'][number], 'slotIndex'>,
+): PhaseSet['slots'][number] {
+  return {
+    seedNum: null,
+    entrantId: null,
+    playerId: null,
+    gamerTag: null,
+    prereqId: null,
+    prereqType: null,
+    prereqPlacement: null,
+    ...partial,
+  }
+}
+
+function phaseSet(
+  id: string,
+  fullRoundText: string,
+  slots: PhaseSet['slots'],
+  winnerId: string | null = null,
+): PhaseSet {
+  return {
+    id,
+    state: 1,
+    round: null,
+    fullRoundText,
+    winnerId,
+    hasReportedGames: false,
+    slots,
+  }
+}
+
+describe('projected bracket', () => {
+  const seeds = [
+    phaseSeed(1, '10', 'A'),
+    phaseSeed(2, '20', 'B'),
+    phaseSeed(3, '30', 'C'),
+    phaseSeed(4, '40', 'D'),
+  ]
+  const winners = [
+    phaseSet('w1', 'Winners Round 1', [
+      phaseSlot({ slotIndex: 1, seedNum: 1, entrantId: 'e1', playerId: '10', gamerTag: 'A' }),
+      phaseSlot({ slotIndex: 2, seedNum: 4, entrantId: 'e4', playerId: '40', gamerTag: 'D' }),
+    ]),
+    phaseSet('w2', 'Winners Round 1', [
+      phaseSlot({ slotIndex: 1, seedNum: 2, entrantId: 'e2', playerId: '20', gamerTag: 'B' }),
+      phaseSlot({ slotIndex: 2, seedNum: 3, entrantId: 'e3', playerId: '30', gamerTag: 'C' }),
+    ]),
+  ]
+  const final = phaseSet('wf', 'Winners Final', [
+    phaseSlot({ slotIndex: 1, prereqId: 'w1', prereqType: 'set', prereqPlacement: 1 }),
+    phaseSlot({ slotIndex: 2, prereqId: 'w2', prereqType: 'set', prereqPlacement: 1 }),
+  ])
+  const losers = phaseSet('l1', 'Losers Round 1', [
+    phaseSlot({ slotIndex: 1, prereqId: 'w1', prereqType: 'set', prereqPlacement: 2 }),
+    phaseSlot({ slotIndex: 2, prereqId: 'w2', prereqType: 'set', prereqPlacement: 2 }),
+  ])
+
+  function ids(sets: PhaseSet[], id: string): string[] {
+    const row = projectBracket(sets, seeds).find((item) => item.set.id === id)
+    assert.ok(row)
+    return projectedPlayerIds(row.slots)
+  }
+
+  it('advances the better seed and keeps an actual winner', () => {
+    const sets = [...winners, final, losers]
+    assert.deepEqual(ids(sets, 'wf'), ['10', '20'])
+    assert.deepEqual(ids(sets, 'l1'), ['40', '30'])
+    const upset = [
+      { ...winners[0], winnerId: 'e4' },
+      winners[1],
+      final,
+    ]
+    assert.deepEqual(ids(upset, 'wf'), ['40', '20'])
+    const pairs = buildPairList(sets, seeds).map((pair) => pairKey(pair.a, pair.b))
+    assert.ok(pairs.includes('10|20'))
+    assert.ok(pairs.includes('30|40'))
+  })
+
+  it('labels the forecast and leaves byes, gaps, cycles, and resets empty', () => {
+    const sets = [...winners, final]
+    const projected = projectBracket(sets, seeds)
+    assert.equal(projected.find((row) => row.set.id === 'w1')?.projected, false)
+    assert.equal(projected.find((row) => row.set.id === 'wf')?.projected, true)
+
+    const bye = phaseSet('bye', 'Winners Round 1', [
+      phaseSlot({ slotIndex: 1, seedNum: 1, entrantId: 'e1', playerId: '10', gamerTag: 'A' }),
+      phaseSlot({ slotIndex: 2 }),
+    ])
+    const afterBye = phaseSet('after-bye', 'Winners Quarter-Final', [
+      phaseSlot({ slotIndex: 1, prereqId: 'bye', prereqType: 'set', prereqPlacement: 1 }),
+      phaseSlot({ slotIndex: 2, seedNum: 2, entrantId: 'e2', playerId: '20', gamerTag: 'B' }),
+    ])
+    const byeRows = projectBracket([bye, afterBye], seeds)
+    assert.equal(byeRows[0]?.scoreable, false)
+    assert.deepEqual(projectedPlayerIds(byeRows[1]?.slots ?? []), ['10', '20'])
+
+    const missing = phaseSet('missing', 'Winners Final', [
+      phaseSlot({ slotIndex: 1, prereqId: 'gone', prereqType: 'set', prereqPlacement: 1 }),
+      phaseSlot({ slotIndex: 2, prereqId: 'w1', prereqType: 'set', prereqPlacement: 1 }),
+    ])
+    const missingRow = projectBracket([...winners, missing], seeds).find((row) => row.set.id === 'missing')
+    assert.equal(missingRow?.scoreable, false)
+    assert.equal(missingRow?.slots[0]?.kind, 'unresolved')
+
+    const cycle = phaseSet('cycle', 'Winners Final', [
+      phaseSlot({ slotIndex: 1, prereqId: 'cycle', prereqType: 'set', prereqPlacement: 1 }),
+      phaseSlot({ slotIndex: 2, prereqId: 'cycle', prereqType: 'set', prereqPlacement: 2 }),
+    ])
+    const cycleRow = projectBracket([cycle], seeds)[0]
+    assert.equal(cycleRow?.scoreable, false)
+    assert.ok(cycleRow?.slots.every((slot) => slot.kind === 'unresolved'))
+
+    const reset = phaseSet('reset', 'Grand Final Reset', [
+      phaseSlot({ slotIndex: 1, prereqId: 'wf', prereqType: 'set', prereqPlacement: 1 }),
+      phaseSlot({ slotIndex: 2, prereqId: 'wf', prereqType: 'set', prereqPlacement: 2 }),
+    ])
+    const resetRow = projectBracket([...sets, reset], seeds).find((row) => row.set.id === 'reset')
+    assert.equal(resetRow?.scoreable, false)
+    assert.ok(resetRow?.slots.every((slot) => slot.kind === 'unresolved'))
+  })
+
+  it('keeps bye winners seated when start.gg did not create the earlier set', () => {
+    const collapsed = phaseSet('wr2', 'Winners Round 2', [
+      phaseSlot({
+        slotIndex: 1,
+        seedNum: 1,
+        entrantId: 'e1',
+        playerId: '10',
+        gamerTag: 'A',
+        prereqId: 'preview-missing-a',
+        prereqType: 'set',
+        prereqPlacement: 1,
+      }),
+      phaseSlot({
+        slotIndex: 2,
+        seedNum: 4,
+        entrantId: 'e4',
+        playerId: '40',
+        gamerTag: 'D',
+        prereqId: 'preview-missing-b',
+        prereqType: 'set',
+        prereqPlacement: 1,
+      }),
+    ])
+    const row = projectBracket([collapsed], seeds)[0]
+    assert.equal(row?.scoreable, true)
+    assert.deepEqual(projectedPlayerIds(row?.slots ?? []), ['10', '40'])
+  })
+})
+
+describe('focused moves', () => {
+  const seeds = [
+    phaseSeed(1, '10', 'A'),
+    phaseSeed(2, '20', 'B'),
+    phaseSeed(3, '30', 'C'),
+    phaseSeed(4, '40', 'D'),
+  ]
+  const sets = [
+    phaseSet('r1a', 'Winners Round 1', [
+      phaseSlot({ slotIndex: 1, seedNum: 1, entrantId: 'e1', playerId: '10', gamerTag: 'A' }),
+      phaseSlot({ slotIndex: 2, seedNum: 4, entrantId: 'e4', playerId: '40', gamerTag: 'D' }),
+    ]),
+    phaseSet('r1b', 'Winners Round 1', [
+      phaseSlot({ slotIndex: 1, seedNum: 2, entrantId: 'e2', playerId: '20', gamerTag: 'B' }),
+      phaseSlot({ slotIndex: 2, seedNum: 3, entrantId: 'e3', playerId: '30', gamerTag: 'C' }),
+    ]),
+    phaseSet('wf', 'Winners Final', [
+      phaseSlot({ slotIndex: 1, prereqId: 'r1a', prereqType: 'set', prereqPlacement: 1 }),
+      phaseSlot({ slotIndex: 2, prereqId: 'r1b', prereqType: 'set', prereqPlacement: 1 }),
+    ]),
+  ]
+  const days = new Map<string, number>([
+    ['10|20', 1],
+    ['10|30', 50],
+    ['10|40', 50],
+    ['20|30', 50],
+    ['20|40', 50],
+    ['30|40', 50],
+  ])
+
+  function movesFor(focusSetId: string | null) {
+    return listSuggestedMoves({
+      seeds,
+      sets,
+      daysByPair: days,
+      focusSetId,
+      pairHeat: (a, b) => {
+        const key = pairKey(a, b)
+        if (!days.has(key)) return { missing: true }
+        return { ok: true, heat: computeHeat(days.get(key)!, 1) }
+      },
+    })
+  }
+
+  it('cools the selected set and rejects a move that heats another', () => {
+    const moves = movesFor('wf')
+    assert.ok(moves.some((move) => move.id === '2->3'))
+    assert.ok(!moves.some((move) => move.id === '2->4'))
+  })
+
+  it('hides suggestions until a set is selected', () => {
+    assert.deepEqual(movesForSelectedSet(null, movesFor('wf')), [])
+    assert.ok(movesForSelectedSet('wf', movesFor('wf')).length > 0)
+  })
+})
+
+describe('receipt links', () => {
+  it('opens the set for a bare slug and a prefixed slug', () => {
+    const expected =
+      'https://www.start.gg/tournament/gould-st-gauntlet-26/event/ultimate-singles/set/108084622'
+    assert.equal(
+      receiptSetUrl('gould-st-gauntlet-26', 'ultimate-singles', '108084622'),
+      expected,
+    )
+    assert.equal(
+      receiptSetUrl(
+        'tournament/gould-st-gauntlet-26',
+        'tournament/gould-st-gauntlet-26/event/ultimate-singles',
+        '108084622',
+      ),
+      expected,
+    )
+  })
+
+  it('shows the tournament beside the event', () => {
+    assert.equal(
+      receiptHeading('Gould St Gauntlet 26', 'Ultimate Singles'),
+      'Gould St Gauntlet 26 · Ultimate Singles',
+    )
   })
 })

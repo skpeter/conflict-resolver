@@ -18,8 +18,9 @@ export function classifyHistoryPage(
   nodeCount: number,
   clocksMs: Array<number | null>,
   nowMs: number,
+  pageSize = HISTORY_PAGE_SIZE,
 ): PageDecision {
-  if (nodeCount < HISTORY_PAGE_SIZE) return 'done'
+  if (nodeCount < pageSize) return 'done'
   const inside = clocksMs.some((clock) => clock != null && inWindow(nowMs, clock))
   if (page >= HISTORY_MAX_PAGES) return inside ? 'incomplete' : 'done'
   return 'continue'

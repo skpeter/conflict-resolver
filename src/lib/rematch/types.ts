@@ -11,6 +11,7 @@ export type Receipt = {
   setId: string
   eventName: string
   eventSlug: string
+  tournamentName: string
   tournamentSlug: string
   roundText: string
   winnerTag: string | null
@@ -57,8 +58,10 @@ export type HistorySet = {
   fullRoundText: string | null
   winnerId: string | null
   eventName: string
+  eventId: string | null
   eventSlug: string
   eventStartAt: number | null
+  tournamentName: string
   tournamentSlug: string
   slots: Array<{
     gamerTag: string | null
