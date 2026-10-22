@@ -8,7 +8,7 @@ import {
   projectedSlotText,
   type ProjectedSet,
 } from './project.ts'
-import { roundIndex } from './roundIndex.ts'
+import { roundIndexTable } from './roundIndex.ts'
 import type {
   BracketRow,
 } from './preview.ts'
@@ -26,7 +26,7 @@ export type PairHeatLookup = (
 
 function heatForRow(
   row: ProjectedSet,
-  allSets: PhaseSet[],
+  rounds: Map<string, number>,
   pairHeat: PairHeatLookup,
   daysByPair: Map<string, number>,
   multipliers: { recency: number; round: number },
@@ -39,7 +39,7 @@ function heatForRow(
   if ('missing' in lookup) return { heat: 0, failed: false }
   const days = daysByPair.get(pairKey(filled[0], filled[1]))
   if (days == null) return { heat: lookup.heat, failed: false }
-  const ri = roundIndex(row.set, allSets)
+  const ri = rounds.get(row.set.id) ?? 1
   return {
     heat: computeHeat(days, ri, multipliers.recency, multipliers.round),
     failed: false,
@@ -48,14 +48,14 @@ function heatForRow(
 
 function heatsBySet(
   rows: ProjectedSet[],
-  sets: PhaseSet[],
+  rounds: Map<string, number>,
   pairHeat: PairHeatLookup,
   daysByPair: Map<string, number>,
   multipliers: { recency: number; round: number },
 ): { heats: Map<string, number>; failed: boolean } {
   const heats = new Map<string, number>()
   for (const row of rows) {
-    const heat = heatForRow(row, sets, pairHeat, daysByPair, multipliers)
+    const heat = heatForRow(row, rounds, pairHeat, daysByPair, multipliers)
     if (heat.failed) return { heats, failed: true }
     heats.set(row.set.id, heat.heat)
   }
@@ -119,6 +119,18 @@ function sameBracket(
     .join(',')
 }
 
+/** Shown when a failed lookup would otherwise look like "no move cools this set". */
+export const HISTORY_FAILED_MOVES =
+  'History failed for a pair. Suggestions stay hidden until that retry succeeds.'
+
+/** True when any pair lookup failed. Empty suggestions are not a finished answer. */
+export function historyBlocksMoves(statuses: Iterable<string>): boolean {
+  for (const status of statuses) {
+    if (status === 'failed') return true
+  }
+  return false
+}
+
 /** Suggestions stay hidden until the organizer selects one set. */
 export function movesForSelectedSet<T>(
   selectedSetId: string | null,
@@ -160,8 +172,9 @@ export function listSuggestedMoves(args: {
 
   if (focusSetId && !sets.some((set) => set.id === focusSetId)) return []
 
+  const rounds = roundIndexTable(sets)
   const beforeRows = projectBracket(sets, seeds, null)
-  const before = heatsBySet(beforeRows, sets, pairHeat, daysByPair, multipliers)
+  const before = heatsBySet(beforeRows, rounds, pairHeat, daysByPair, multipliers)
   if (before.failed) return []
   const currentHeats: number[] = []
   for (const row of beforeRows) {
@@ -181,7 +194,7 @@ export function listSuggestedMoves(args: {
       if (!mapping) continue
 
       const afterRows = projectBracket(sets, seeds, mapping)
-      const after = heatsBySet(afterRows, sets, pairHeat, daysByPair, multipliers)
+      const after = heatsBySet(afterRows, rounds, pairHeat, daysByPair, multipliers)
       if (after.failed) continue
 
       const afterHeats: number[] = []
@@ -251,7 +264,7 @@ export function listSuggestedMoves(args: {
         .map((s) => {
           let seedNum = s.seedNum
           for (const [num, holder] of mapping) {
-            if (holder.seedId === s.seedId) {
+            if (holder?.seedId === s.seedId) {
               seedNum = num
               break
             }

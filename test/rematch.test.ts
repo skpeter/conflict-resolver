@@ -21,10 +21,13 @@ import {
   pickReceiptClock,
   resolveStartGgLink,
   roundIndex,
+  roundIndexTable,
   setClock,
   shouldApplyGeneration,
+  HISTORY_FAILED_MOVES,
   describeMovesCard,
   describeSuggestedMove,
+  historyBlocksMoves,
   listSuggestedMoves,
   movesForSelectedSet,
   placementDropNote,
@@ -32,6 +35,7 @@ import {
   projectBracket,
   projectedPlayerIds,
   isByeSet,
+  isListedSet,
   receiptHeading,
   receiptSetUrl,
   shouldIgnoreLaterMeetings,
@@ -236,6 +240,28 @@ describe('pairs', () => {
     assert.equal(two.get(6)?.playerId, '70')
     assert.equal(two.get(7)?.playerId, '50')
   })
+
+  it('refuses a slide across a missing seed number', () => {
+    const gapped: SeedSlot[] = [
+      { seedId: 's1', seedNum: 1, entrantId: 'e1', playerId: '10', gamerTag: 'A', participantCount: 1 },
+      { seedId: 's2', seedNum: 2, entrantId: 'e2', playerId: '20', gamerTag: 'B', participantCount: 1 },
+      { seedId: 's4', seedNum: 4, entrantId: 'e4', playerId: '40', gamerTag: 'D', participantCount: 1 },
+    ]
+    assert.equal(applySeedShift(gapped, 2, 2), null)
+    const seeded = {
+      id: 'r1',
+      state: 1,
+      round: 1,
+      fullRoundText: 'Winners Round 1',
+      winnerId: null,
+      hasReportedGames: false,
+      slots: [
+        { slotIndex: 1, seedNum: 2, entrantId: 'e2', playerId: '20', gamerTag: 'B', prereqId: 's2', prereqType: 'seed', prereqPlacement: null },
+        { slotIndex: 2, seedNum: 4, entrantId: 'e4', playerId: '40', gamerTag: 'D', prereqId: 's4', prereqType: 'seed', prereqPlacement: null },
+      ],
+    }
+    assert.doesNotThrow(() => buildPairList([seeded], gapped))
+  })
 })
 
 describe('roundIndex', () => {
@@ -327,6 +353,36 @@ describe('roundIndex', () => {
     assert.equal(roundIndex(r3, all), 3)
   })
 
+  it('builds one round index per set', () => {
+    const r1: PhaseSet = {
+      id: 'r1',
+      state: 1,
+      round: 1,
+      fullRoundText: 'Winners Round 1',
+      winnerId: null,
+      hasReportedGames: false,
+      slots: [
+        { slotIndex: 1, seedNum: 1, entrantId: 'e1', playerId: '1', gamerTag: 'A', prereqId: null, prereqType: null, prereqPlacement: null },
+        { slotIndex: 2, seedNum: 2, entrantId: 'e2', playerId: '2', gamerTag: 'B', prereqId: null, prereqType: null, prereqPlacement: null },
+      ],
+    }
+    const final: PhaseSet = {
+      id: 'wf',
+      state: 1,
+      round: 2,
+      fullRoundText: 'Winners Final',
+      winnerId: null,
+      hasReportedGames: false,
+      slots: [
+        { slotIndex: 1, seedNum: null, entrantId: null, playerId: null, gamerTag: null, prereqId: 'r1', prereqType: 'set', prereqPlacement: 1 },
+        { slotIndex: 2, seedNum: null, entrantId: null, playerId: null, gamerTag: null, prereqId: null, prereqType: null, prereqPlacement: null },
+      ],
+    }
+    const all = [r1, final]
+    const table = roundIndexTable(all)
+    for (const set of all) assert.equal(table.get(set.id), roundIndex(set, all))
+  })
+
   it('does not invent a grand final when only the reset is present', () => {
     const reset: PhaseSet = {
       id: 'gfr',
@@ -353,6 +409,15 @@ describe('roundIndex', () => {
 })
 
 describe('moves and write gate', () => {
+  it('keeps a failed history distinct from an empty suggestion list', () => {
+    assert.equal(historyBlocksMoves(['ready', 'cold']), false)
+    assert.equal(historyBlocksMoves(['ready', 'failed']), true)
+    assert.equal(
+      HISTORY_FAILED_MOVES,
+      'History failed for a pair. Suggestions stay hidden until that retry succeeds.',
+    )
+  })
+
   it('hides a move that reads a history-failed pair', () => {
     const seeds: SeedSlot[] = [
       { seedId: 's1', seedNum: 1, entrantId: 'e1', playerId: '10', gamerTag: 'A', participantCount: 1 },
@@ -758,6 +823,60 @@ describe('projected bracket', () => {
     const resetRow = projectBracket([...sets, reset], seeds).find((row) => row.set.id === 'reset')
     assert.equal(resetRow?.scoreable, false)
     assert.ok(resetRow?.slots.every((slot) => slot.kind === 'unresolved'))
+    assert.equal(isListedSet(reset, resetRow?.slots ?? []), false)
+    assert.equal(isListedSet(winners[0], projected.find((row) => row.set.id === 'w1')?.slots ?? []), true)
+  })
+
+  it('follows the seed number when a slide previews a seed or bye slot', () => {
+    const seedSlot = phaseSet('seeded', 'Winners Round 1', [
+      phaseSlot({
+        slotIndex: 1,
+        seedNum: 1,
+        entrantId: 'e1',
+        playerId: '10',
+        gamerTag: 'A',
+        prereqId: 's1',
+        prereqType: 'seed',
+      }),
+      phaseSlot({
+        slotIndex: 2,
+        seedNum: 4,
+        entrantId: 'e4',
+        playerId: '40',
+        gamerTag: 'D',
+        prereqId: 's4',
+        prereqType: 'seed',
+      }),
+    ])
+    const byeSlot = phaseSet('bye-slot', 'Winners Round 1', [
+      phaseSlot({
+        slotIndex: 1,
+        seedNum: 1,
+        entrantId: 'e1',
+        playerId: '10',
+        gamerTag: 'A',
+        prereqType: 'bye',
+      }),
+      phaseSlot({
+        slotIndex: 2,
+        seedNum: 4,
+        entrantId: 'e4',
+        playerId: '40',
+        gamerTag: 'D',
+      }),
+    ])
+    const mapping = applySeedShift(seeds, 1, 1)
+    assert.ok(mapping)
+    assert.deepEqual(projectedPlayerIds(projectBracket([seedSlot], seeds)[0]?.slots ?? []), ['10', '40'])
+    assert.deepEqual(
+      projectedPlayerIds(projectBracket([seedSlot], seeds, mapping)[0]?.slots ?? []),
+      ['20', '40'],
+    )
+    assert.deepEqual(projectedPlayerIds(projectBracket([byeSlot], seeds)[0]?.slots ?? []), ['10', '40'])
+    assert.deepEqual(
+      projectedPlayerIds(projectBracket([byeSlot], seeds, mapping)[0]?.slots ?? []),
+      ['20', '40'],
+    )
   })
 
   it('keeps bye winners seated when start.gg did not create the earlier set', () => {

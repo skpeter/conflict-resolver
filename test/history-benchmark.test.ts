@@ -4,6 +4,7 @@ import {
   benchmarkHistoryTransports,
   buildAliasQuery,
   chooseHistoryTransport,
+  loadAliasPairHistories,
 } from '../src/lib/startgg/historyBenchmark.ts'
 import type { StartGgClient } from '../src/lib/startgg/client.ts'
 
@@ -131,5 +132,59 @@ describe('history transport benchmark', () => {
     assert.equal(alias.calls, 3)
     assert.ok(alias.calls < wide.calls)
     assert.deepEqual(alias.receipts, wide.receipts)
+  })
+
+  it('treats a null history reply as failed and an empty list as cold', async () => {
+    const replies = [
+      { h0: null },
+      { h0: { sets: null } },
+      { h0: { sets: { nodes: [] } } },
+    ]
+    const seen: string[] = []
+    for (const reply of replies) {
+      const client = {
+        async request() {
+          return reply
+        },
+      } as unknown as StartGgClient
+      await loadAliasPairHistories(
+        client,
+        [{ a: '10', b: '20' }],
+        NOW_MS,
+        'UTC',
+        null,
+        (_key, result) => {
+          seen.push(result.kind)
+        },
+      )
+    }
+    assert.deepEqual(seen, ['history-failed', 'history-failed', 'cold'])
+  })
+
+  it('stops before the next page when the load is no longer current', async () => {
+    let calls = 0
+    let current = true
+    const full = Array.from({ length: 100 }, () => meeting())
+    const client = {
+      async request() {
+        calls += 1
+        current = false
+        return { h0: { sets: { nodes: full } } }
+      },
+    } as unknown as StartGgClient
+    const seen: string[] = []
+    await loadAliasPairHistories(
+      client,
+      [{ a: '10', b: '20' }],
+      NOW_MS,
+      'UTC',
+      null,
+      (_key, result) => {
+        seen.push(result.kind)
+      },
+      () => current,
+    )
+    assert.equal(calls, 1)
+    assert.deepEqual(seen, [])
   })
 })

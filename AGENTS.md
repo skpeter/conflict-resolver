@@ -6,9 +6,9 @@
 - Show seed suggestions only for the selected set, and keep them small enough that they do not drastically change the original seeding. Push seeds only while no set in the phase has started; after that, edits are manual, and the bracket is never reset.
 - Name the player a suggestion swaps with, and keep the seed number beside the tag. State the hottest heat left on the bracket once on the card. Keep a suggestion when it cools the selected set and every set it heats stays below that set's current heat.
 - A swap that drops a player into a worse placement tier is still allowed. Show that drop, and use the placement bands for this bracket format.
-- Do not list bye sets. The player who receives the bye advances, and the next real match is what shows. Grand Final Reset is not a bye.
+- Do not list bye sets. The player who receives the bye advances, and the next real match is what shows. Leave Grand Final Reset off the list too.
 - Last-meeting details include the tournament name beside the event name. Set links go directly to the set (`/tournament/{slug}/event/{event}/set/{id}`) and must not add a second `tournament/` segment.
-- Keep start.gg tokens out of chat and out of git. For a live API run, read the gitignored `startgg.token.local` file and do not print it. A token set only in the user's own PowerShell window is not visible to the agent shell.
+- Keep start.gg tokens out of chat and out of git. For a live API run, the event link is enough: read the gitignored `startgg.token.local` file in the repo root and do not print it. Do not ask for the token. A token set only in the user's own PowerShell window is not visible to the agent shell.
 - Publish the static app with GitHub Actions to GitHub Pages. That workflow runs `npm test` and the production build before deploy, and `npm test` only runs the files named in `package.json`.
 
 ## Learned Workspace Facts

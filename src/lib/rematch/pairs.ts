@@ -76,7 +76,9 @@ export function applySeedShift(
 
   const step = delta > 0 ? 1 : -1
   for (let n = fromSeedNum; n !== to; n += step) {
-    result.set(n, byNum.get(n + step)!)
+    const incoming = byNum.get(n + step)
+    if (!incoming) return null
+    result.set(n, incoming)
   }
   result.set(to, mover)
   return result

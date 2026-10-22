@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -12,6 +12,8 @@ import {
   isAuthError,
   describeMovesCard,
   describeSuggestedMove,
+  HISTORY_FAILED_MOVES,
+  historyBlocksMoves,
   listSuggestedMoves,
   movesForSelectedSet,
   localCalendarDate,
@@ -20,11 +22,11 @@ import {
   playerKeyOf,
   projectBracket,
   projectedPlayerIds,
-  isByeSet,
+  isListedSet,
   receiptHeading,
   receiptSetUrl,
   resolveStartGgLink,
-  roundIndex,
+  roundIndexTable,
   seedKeyOf,
   shouldApplyGeneration,
   type BracketRow,
@@ -199,6 +201,7 @@ export default function App() {
           done += 1
           setPairProgress({ done, total: list.length })
         },
+        () => shouldApplyGeneration(gen, generation.current),
       )
     } catch (err) {
       if (!shouldApplyGeneration(gen, generation.current)) return
@@ -262,24 +265,13 @@ export default function App() {
       const state = pairs.get(pairKey(a, b))
       if (!state || state.status === 'checking') return { missing: true as const }
       if (state.status === 'failed') return { failed: true as const }
-      if (state.status === 'cold' || state.status === 'no-player-id') {
-        return { ok: true as const, heat: 0 }
-      }
-      const setForPair = loaded?.sets.find((s) => {
-        const ids = s.slots.map((x) => x.playerId).filter(Boolean)
-        return ids.length === 2 && pairKey(ids[0]!, ids[1]!) === pairKey(a, b)
-      })
-      const ri = setForPair && loaded ? roundIndex(setForPair, loaded.sets) : 1
-      const heat = computeHeat(
-        state.days,
-        ri,
-        recencyMultiplier,
-        roundMultiplier,
-      )
-      return { ok: true as const, heat }
+      return { ok: true as const, heat: 0 }
     },
-    [pairs, loaded, recencyMultiplier, roundMultiplier],
+    [pairs],
   )
+
+  const deferredRecency = useDeferredValue(recencyMultiplier)
+  const deferredRound = useDeferredValue(roundMultiplier)
 
   const daysByPair = useMemo(() => {
     const map = new Map<string, number>()
@@ -296,6 +288,11 @@ export default function App() {
     if (!loaded) return []
     return projectBracket(loaded.sets, loaded.seeds)
   }, [loaded])
+
+  const rounds = useMemo(
+    () => (loaded ? roundIndexTable(loaded.sets) : new Map<string, number>()),
+    [loaded],
+  )
 
   const scoredSets = useMemo(() => {
     if (!loaded) return []
@@ -374,13 +371,8 @@ export default function App() {
           state: 'ready' as const,
         }
       }
-      const ri = roundIndex(set, loaded.sets)
-      const heat = computeHeat(
-        pair.days,
-        ri,
-        recencyMultiplier,
-        roundMultiplier,
-      )
+      const ri = rounds.get(set.id) ?? 1
+      const heat = computeHeat(pair.days, ri, deferredRecency, deferredRound)
       const band = heatBand(heat)
       return {
         set,
@@ -394,7 +386,7 @@ export default function App() {
         days: pair.days,
       }
     })
-  }, [loaded, pairs, projectedRows, recencyMultiplier, roundMultiplier])
+  }, [loaded, pairs, projectedRows, rounds, deferredRecency, deferredRound])
 
   const sortedSets = useMemo(() => {
     return [...scoredSets].sort((a, b) => b.heat - a.heat)
@@ -402,8 +394,12 @@ export default function App() {
 
   const historyPending = [...pairs.values()].some((pair) => pair.status === 'checking')
 
+  const historyFailed = historyBlocksMoves(
+    [...pairs.values()].map((pair) => pair.status),
+  )
+
   const moves: SuggestedMove[] = useMemo(() => {
-    if (!loaded || !selectedSetId) return []
+    if (!loaded || !selectedSetId || historyFailed) return []
     if ([...pairs.values()].some((p) => p.status === 'checking')) return []
     const finiteDays = new Map<string, number>()
     for (const [k, v] of daysByPair) {
@@ -416,19 +412,20 @@ export default function App() {
         sets: loaded.sets,
         pairHeat: pairLookup,
         daysByPair: finiteDays,
-        recencyMultiplier,
-        roundMultiplier,
+        recencyMultiplier: deferredRecency,
+        roundMultiplier: deferredRound,
         focusSetId: selectedSetId,
         bracketType: loaded.phase.bracketType,
       }),
     )
   }, [
+    historyFailed,
     loaded,
     pairs,
     daysByPair,
     pairLookup,
-    recencyMultiplier,
-    roundMultiplier,
+    deferredRecency,
+    deferredRound,
     selectedSetId,
   ])
 
@@ -666,7 +663,7 @@ export default function App() {
               </>
             ) : (
             <ul className="space-y-2">
-              {sortedSets.filter((row) => !isByeSet(row.slots)).map((row) => {
+              {sortedSets.filter((row) => isListedSet(row.set, row.slots)).map((row) => {
                 const selected = selectedSetId === row.set.id
                 const players = projectedPlayerIds(row.slots)
                 const context = 'context' in row ? row.context : null
@@ -766,6 +763,8 @@ export default function App() {
               <p className="mt-2 text-base text-zinc-700">
                 Still reading history. The move appears when every pair is settled.
               </p>
+            ) : historyFailed ? (
+              <p className="mt-2 text-base text-zinc-700">{HISTORY_FAILED_MOVES}</p>
             ) : moves.length === 0 ? (
               <p className="mt-2 text-base text-zinc-700">
                 No move cools this set without heating another.

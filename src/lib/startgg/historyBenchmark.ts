@@ -219,20 +219,30 @@ export async function loadAliasPairHistories(
   timeZone: string,
   excludeEventId?: string | null,
   onPair?: (key: string, result: PairHistoryResult) => void,
+  shouldContinue?: () => boolean,
 ): Promise<void> {
-  await walkAliasBatches(client, pairs, nowMs, timeZone, excludeEventId, ALIAS_BATCH_SIZE, (key, result) => {
-    onPair?.(
-      key,
-      result === 'transport'
-        ? {
-            kind: 'history-failed',
-            label: 'history failed',
-            context: null,
-            cache: { completed: null, unfinished: null },
-          }
-        : result,
-    )
-  })
+  await walkAliasBatches(
+    client,
+    pairs,
+    nowMs,
+    timeZone,
+    excludeEventId,
+    ALIAS_BATCH_SIZE,
+    (key, result) => {
+      onPair?.(
+        key,
+        result === 'transport'
+          ? {
+              kind: 'history-failed',
+              label: 'history failed',
+              context: null,
+              cache: { completed: null, unfinished: null },
+            }
+          : result,
+      )
+    },
+    shouldContinue,
+  )
 }
 
 async function aliasReceipts(
@@ -265,18 +275,22 @@ async function walkAliasBatches(
   excludeEventId: string | null | undefined,
   batchSize: number,
   onPair: (key: string, result: PairHistoryResult | 'transport') => void,
+  shouldContinue?: () => boolean,
 ): Promise<void> {
+  const current = () => shouldContinue?.() !== false
   for (let offset = 0; offset < pairs.length; offset += batchSize) {
+    if (!current()) return
     const batch = pairs.slice(offset, offset + batchSize)
     const collected = batch.map(() => [] as HistorySet[])
     const incomplete = batch.map(() => false)
     const finished = batch.map(() => false)
     const failed = batch.map(() => false)
     for (let page = 1; page <= HISTORY_MAX_PAGES; page += 1) {
+      if (!current()) return
       const indexes = finished.flatMap((done, index) => (done ? [] : [index]))
       if (indexes.length === 0) break
       const subset = indexes.map((index) => batch[index])
-      let pages: Array<{ sets: HistorySet[]; nodeCount: number }>
+      let pages: Array<{ sets: HistorySet[]; nodeCount: number; missing: boolean }>
       try {
         pages = await fetchAliasPageSplitting(client, subset, page)
       } catch {
@@ -288,6 +302,11 @@ async function walkAliasBatches(
       }
       pages.forEach((pageResult, subsetIndex) => {
         const index = indexes[subsetIndex]
+        if (pageResult.missing) {
+          failed[index] = true
+          finished[index] = true
+          return
+        }
         collected[index].push(...pageResult.sets)
         const clocks = pageResult.sets.map((set) => {
           const clock = setClock({
@@ -307,6 +326,7 @@ async function walkAliasBatches(
         if (decision !== 'continue') finished[index] = true
       })
     }
+    if (!current()) return
     batch.forEach((pair, index) => {
       const key = pairKey(pair.a, pair.b)
       onPair(
@@ -329,7 +349,7 @@ async function fetchAliasPageSplitting(
   client: StartGgClient,
   pairs: Pair[],
   page: number,
-): Promise<Array<{ sets: HistorySet[]; nodeCount: number }>> {
+): Promise<Array<{ sets: HistorySet[]; nodeCount: number; missing: boolean }>> {
   try {
     return await fetchAliasPage(client, pairs, page)
   } catch (err) {
@@ -345,7 +365,7 @@ async function fetchAliasPage(
   client: StartGgClient,
   pairs: Pair[],
   page: number,
-): Promise<Array<{ sets: HistorySet[]; nodeCount: number }>> {
+): Promise<Array<{ sets: HistorySet[]; nodeCount: number; missing: boolean }>> {
   const variables: Record<string, unknown> = { page }
   pairs.forEach((pair, index) => {
     const ordered = orderedPlayerIds(pair.a, pair.b)
@@ -356,10 +376,14 @@ async function fetchAliasPage(
     Record<string, { sets: { nodes: H2HNode[] } | null } | null>
   >(buildAliasQuery(pairs.length), variables)
   return pairs.map((_, index) => {
-    const nodes = data[`h${index}`]?.sets?.nodes ?? []
+    const entry = data[`h${index}`]
+    const nodes = entry?.sets?.nodes
+    if (entry == null || entry.sets == null || nodes == null) {
+      return { sets: [], nodeCount: 0, missing: true }
+    }
     const sets = nodes
       .map((node) => mapHistorySet(node))
       .filter((set): set is HistorySet => set != null)
-    return { sets, nodeCount: nodes.length }
+    return { sets, nodeCount: nodes.length, missing: false }
   })
 }

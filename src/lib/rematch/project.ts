@@ -106,7 +106,7 @@ export function projectBracket(
   function positionOf(seed: SeedSlot): number {
     if (mapping) {
       for (const [num, holder] of mapping) {
-        if (holder.seedId === seed.seedId) return num
+        if (holder?.seedId === seed.seedId) return num
       }
     }
     return seed.seedNum
@@ -169,7 +169,8 @@ export function projectBracket(
 
   function resolveSlot(set: PhaseSet, slot: SetSlot): ProjectedSlot {
     if (isByePrereq(slot.prereqType)) {
-      if (!mapping && slot.playerId) {
+      if (mapping && slot.seedNum != null) return placed(slot)
+      if (slot.playerId) {
         const player = playerFromSlot(slot, seedNumFor(slot.playerId, slot.seedNum))
         return player ?? { kind: 'bye' }
       }
@@ -177,6 +178,17 @@ export function projectBracket(
     }
     if (slot.prereqType && /^seed$/i.test(slot.prereqType)) {
       const seed = slot.prereqId ? seedsById.get(slot.prereqId) : undefined
+      const slotSeedNum = slot.seedNum ?? seed?.seedNum ?? null
+      if (mapping) {
+        if (slotSeedNum == null) return { kind: 'unresolved' }
+        const holder = holderAt(slotSeedNum)
+        if (!holder?.playerId) return { kind: 'bye' }
+        return (
+          playerFromSeed(holder, slotSeedNum, holder.playerId !== slot.playerId) ?? {
+            kind: 'bye',
+          }
+        )
+      }
       if (!seed?.playerId) return { kind: 'unresolved' }
       const player = playerFromSeed(
         seed,
@@ -281,6 +293,17 @@ export function projectedPlayerIds(slots: ProjectedSlot[]): string[] {
   return slots
     .filter((slot): slot is ProjectedPlayer => slot.kind === 'player')
     .map((slot) => slot.playerId)
+}
+
+/** Grand Final Reset stays off the list. It is not a match to seed or to show. */
+export function isGrandFinalReset(set: PhaseSet): boolean {
+  return /grand final reset/i.test(set.fullRoundText ?? '')
+}
+
+/** Bye sets and Grand Final Reset stay off the organizer list. */
+export function isListedSet(set: PhaseSet, slots: ProjectedSlot[]): boolean {
+  if (isGrandFinalReset(set)) return false
+  return !isByeSet(slots)
 }
 
 /** A bye advances one player, or nobody. It is not a match to show. */
