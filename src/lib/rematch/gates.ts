@@ -19,3 +19,18 @@ export function claimWrite(state: { inFlight: boolean }): boolean {
 export function isAuthError(message: string): boolean {
   return /auth|permission|forbidden|unauthorized|token/i.test(message)
 }
+
+/** A replaced load must not leave pairs on "checking" after the walk stops. */
+export function abandonCheckingPairs<T extends { status: string }>(
+  pairs: Map<string, T>,
+  failed: T,
+): Map<string, T> {
+  let changed = false
+  const next = new Map(pairs)
+  for (const [key, state] of pairs) {
+    if (state.status !== 'checking') continue
+    next.set(key, failed)
+    changed = true
+  }
+  return changed ? next : pairs
+}

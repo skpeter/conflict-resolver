@@ -292,7 +292,7 @@ async function walkAliasBatches(
       const subset = indexes.map((index) => batch[index])
       let pages: Array<{ sets: HistorySet[]; nodeCount: number; missing: boolean }>
       try {
-        pages = await fetchAliasPageSplitting(client, subset, page)
+        pages = await fetchAliasPageSplitting(client, subset, page, current)
       } catch {
         indexes.forEach((index) => {
           failed[index] = true
@@ -349,14 +349,27 @@ async function fetchAliasPageSplitting(
   client: StartGgClient,
   pairs: Pair[],
   page: number,
+  shouldContinue?: () => boolean,
 ): Promise<Array<{ sets: HistorySet[]; nodeCount: number; missing: boolean }>> {
   try {
     return await fetchAliasPage(client, pairs, page)
   } catch (err) {
+    if (shouldContinue && !shouldContinue()) throw err
     if (pairs.length <= 1 || !isQueryComplexityError(err)) throw err
     const mid = Math.ceil(pairs.length / 2)
-    const left = await fetchAliasPageSplitting(client, pairs.slice(0, mid), page)
-    const right = await fetchAliasPageSplitting(client, pairs.slice(mid), page)
+    const left = await fetchAliasPageSplitting(
+      client,
+      pairs.slice(0, mid),
+      page,
+      shouldContinue,
+    )
+    if (shouldContinue && !shouldContinue()) throw err
+    const right = await fetchAliasPageSplitting(
+      client,
+      pairs.slice(mid),
+      page,
+      shouldContinue,
+    )
     return [...left, ...right]
   }
 }

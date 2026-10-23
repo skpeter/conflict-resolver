@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   WINDOW_MS,
+  abandonCheckingPairs,
   ageDays,
   applySeedShift,
   bracketChanged,
@@ -406,6 +407,75 @@ describe('roundIndex', () => {
     }
     assert.equal(roundIndex(reset, [reset]), 1)
   })
+
+  it('heats a bye player’s first match like round 1 and keeps the next round at 3', () => {
+    const open = (
+      id: string,
+      text: string,
+      slots: PhaseSet['slots'],
+    ): PhaseSet => ({
+      id,
+      state: 1,
+      round: null,
+      fullRoundText: text,
+      winnerId: null,
+      hasReportedGames: false,
+      slots,
+    })
+    const played = (slotIndex: number, prereqId: string) => ({
+      slotIndex,
+      seedNum: null,
+      entrantId: null,
+      playerId: null,
+      gamerTag: null,
+      prereqId,
+      prereqType: 'set',
+      prereqPlacement: 1,
+    })
+    const bye = (slotIndex: number) => ({
+      slotIndex,
+      seedNum: 1,
+      entrantId: 'e1',
+      playerId: '1',
+      gamerTag: 'A',
+      prereqId: null,
+      prereqType: 'bye',
+      prereqPlacement: null,
+    })
+    const r1 = open('r1', 'Winners Round 1', [
+      {
+        slotIndex: 1,
+        seedNum: 4,
+        entrantId: 'e4',
+        playerId: '4',
+        gamerTag: 'D',
+        prereqId: 's4',
+        prereqType: 'seed',
+        prereqPlacement: null,
+      },
+      {
+        slotIndex: 2,
+        seedNum: 5,
+        entrantId: 'e5',
+        playerId: '5',
+        gamerTag: 'E',
+        prereqId: 's5',
+        prereqType: 'seed',
+        prereqPlacement: null,
+      },
+    ])
+    const r2 = open('r2', 'Winners Round 2', [played(1, 'r1'), bye(2)])
+    const omitted = open('r2b', 'Winners Round 2', [
+      played(1, 'r1'),
+      { ...played(2, 'missing-bye'), prereqType: 'set' },
+    ])
+    const r3 = open('r3', 'Winners Round 3', [played(1, 'r2'), played(2, 'r2b')])
+    const all = [r1, r2, omitted, r3]
+    assert.equal(roundIndex(r1, all), 1)
+    assert.equal(roundIndex(r2, all), 1)
+    assert.equal(roundIndex(omitted, all), 1)
+    assert.equal(roundIndex(r3, all), 3)
+  })
 })
 
 describe('moves and write gate', () => {
@@ -572,6 +642,11 @@ describe('history page', () => {
   it('keeps walking a short of the cap when a clock is inside', () => {
     assert.equal(classifyHistoryPage(1, 5, [now - DAY], now), 'continue')
   })
+
+  it('ends a wide page before 100 sets and keeps walking a full one', () => {
+    assert.equal(classifyHistoryPage(1, 5, [now - DAY], now, 100), 'done')
+    assert.equal(classifyHistoryPage(1, 100, [now - DAY], now, 100), 'continue')
+  })
 })
 
 describe('write and generation gates', () => {
@@ -597,6 +672,22 @@ describe('preview refresh', () => {
       bracketChanged(expected, [{ seedKey: '1|4', players: '10|30', heat: 0.2 }]),
       true,
     )
+    assert.equal(
+      bracketChanged(expected, [{ seedKey: '1|4', players: '10|40', heat: 0.9 }]),
+      false,
+    )
+  })
+
+  it('replaces pairs still marked checking when a load is abandoned', () => {
+    const failed = { status: 'failed' }
+    const pairs = new Map<string, { status: string }>([
+      ['a', { status: 'ready' }],
+      ['b', { status: 'checking' }],
+    ])
+    const next = abandonCheckingPairs(pairs, failed)
+    assert.equal(next.get('a')?.status, 'ready')
+    assert.equal(next.get('b'), failed)
+    assert.equal(abandonCheckingPairs(next, failed), next)
   })
 })
 
@@ -827,6 +918,38 @@ describe('projected bracket', () => {
     assert.equal(isListedSet(winners[0], projected.find((row) => row.set.id === 'w1')?.slots ?? []), true)
   })
 
+  it('does not advance the opponent when a seed has no player id', () => {
+    const seeds = [
+      phaseSeed(1, '10', 'A'),
+      {
+        seedId: 's2',
+        seedNum: 2,
+        entrantId: 'e2',
+        playerId: null,
+        gamerTag: 'B',
+        participantCount: 1,
+      },
+    ]
+    const set = phaseSet('r1', 'Winners Round 1', [
+      phaseSlot({
+        slotIndex: 1,
+        seedNum: 1,
+        entrantId: 'e1',
+        playerId: '10',
+        gamerTag: 'A',
+      }),
+      phaseSlot({
+        slotIndex: 2,
+        seedNum: 2,
+        entrantId: 'e2',
+        gamerTag: 'B',
+      }),
+    ])
+    const row = projectBracket([set], seeds)[0]
+    assert.equal(row?.slots[1]?.kind, 'unresolved')
+    assert.equal(isByeSet(row?.slots ?? []), false)
+  })
+
   it('follows the seed number when a slide previews a seed or bye slot', () => {
     const seedSlot = phaseSet('seeded', 'Winners Round 1', [
       phaseSlot({
@@ -954,8 +1077,9 @@ describe('focused moves', () => {
 
   it('cools the selected set and rejects a move that heats another', () => {
     const moves = movesFor('wf')
-    assert.ok(moves.some((move) => move.id === '2->3'))
-    assert.ok(!moves.some((move) => move.id === '2->4'))
+    assert.ok(moves.some((move) => move.seedNumFrom === 2 && move.seedNumTo === 3))
+    assert.ok(!moves.some((move) => move.seedNumFrom === 2 && move.seedNumTo === 4))
+    assert.equal(new Set(moves.map((move) => move.id)).size, moves.length)
   })
 
   it('keeps a move whose new heat on another set stays below this set', () => {
@@ -992,9 +1116,9 @@ describe('focused moves', () => {
         return { ok: true, heat }
       },
     })
-    assert.ok(moves.some((move) => move.id === '4->2'))
-    assert.ok(!moves.some((move) => move.id === '2->4'))
-    const kept = moves.find((move) => move.id === '4->2')
+    assert.ok(moves.some((move) => move.seedNumFrom === 4 && move.seedNumTo === 2))
+    assert.ok(!moves.some((move) => move.seedNumFrom === 2 && move.seedNumTo === 4))
+    const kept = moves.find((move) => move.seedNumFrom === 4 && move.seedNumTo === 2)
     assert.ok(kept)
     assert.ok(kept.setHeatAfter != null && kept.setHeatAfter < 0.5)
     assert.ok(kept.newHottest < 0.5)
@@ -1041,12 +1165,12 @@ describe('focused moves', () => {
         return { ok: true, heat: computeHeat(days.get(key)!, 1) }
       },
     })
-    const kept = moves.find((move) => move.id === '4->3' || move.id === '3->4')
+    const isNeighbor = (move: { seedNumFrom: number; seedNumTo: number }) =>
+      (move.seedNumFrom === 4 && move.seedNumTo === 3) ||
+      (move.seedNumFrom === 3 && move.seedNumTo === 4)
+    const kept = moves.find(isNeighbor)
     assert.ok(kept)
-    assert.equal(
-      moves.filter((move) => move.id === '4->3' || move.id === '3->4').length,
-      1,
-    )
+    assert.equal(moves.filter(isNeighbor).length, 1)
     assert.ok(kept.setHeatBefore != null && kept.setHeatAfter != null)
     assert.ok(kept.setHeatAfter < kept.setHeatBefore)
     assert.ok(kept.newHottest > kept.setHeatAfter)

@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -6,6 +6,7 @@ import { useMultipliers } from '@/hooks/useMultipliers'
 import {
   bracketChanged,
   buildPairList,
+  abandonCheckingPairs,
   claimWrite,
   computeHeat,
   heatBand,
@@ -109,6 +110,7 @@ export default function App() {
     writtenAtGen: number
   } | null>(null)
 
+  const MOVE_SEARCH_DELAY_MS = 200
   const generation = useRef(0)
   const visitMap = useRef(new Map<string, PairState>())
   const visitAsOf = useRef<number | null>(null)
@@ -124,6 +126,17 @@ export default function App() {
   } = useMultipliers()
 
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+
+  const stopChecking = useCallback(() => {
+    setPairs((prev) =>
+      abandonCheckingPairs(prev, {
+        status: 'failed',
+        label: 'history failed',
+        context: null,
+        cache: { completed: null, unfinished: null },
+      }),
+    )
+  }, [])
 
   const beginLoad = useCallback(async (phaseId: string, gen: number) => {
     if (!clientRef.current) return
@@ -203,11 +216,13 @@ export default function App() {
         },
         () => shouldApplyGeneration(gen, generation.current),
       )
+      if (shouldApplyGeneration(gen, generation.current)) stopChecking()
     } catch (err) {
       if (!shouldApplyGeneration(gen, generation.current)) return
       setStatus(err instanceof Error ? err.message : String(err))
+      stopChecking()
     }
-  }, [timeZone])
+  }, [stopChecking, timeZone])
 
   const onSubmitLink = async () => {
     const resolved = resolveStartGgLink(link)
@@ -221,7 +236,11 @@ export default function App() {
     }
     generation.current += 1
     const gen = generation.current
-    clientRef.current = new StartGgClient(token.trim())
+    const trimmed = token.trim()
+    clientRef.current?.retire()
+    if (!clientRef.current?.usesToken(trimmed)) {
+      clientRef.current = new StartGgClient(trimmed)
+    }
     setPhaseChoices(null)
     setWriteLine(null)
     setWriteBlocked(false)
@@ -246,6 +265,7 @@ export default function App() {
             ? `not an elimination phase. ${names}`
             : 'not an elimination phase',
         )
+        stopChecking()
         return
       }
       if (phases.length === 1) {
@@ -254,9 +274,11 @@ export default function App() {
       }
       setPhaseChoices(phases)
       setStatus('Pick an elimination phase')
+      stopChecking()
     } catch (err) {
       if (!shouldApplyGeneration(gen, generation.current)) return
       setStatus(err instanceof Error ? err.message : String(err))
+      stopChecking()
     }
   }
 
@@ -270,8 +292,15 @@ export default function App() {
     [pairs],
   )
 
-  const deferredRecency = useDeferredValue(recencyMultiplier)
-  const deferredRound = useDeferredValue(roundMultiplier)
+  const [moveRecency, setMoveRecency] = useState(recencyMultiplier)
+  const [moveRound, setMoveRound] = useState(roundMultiplier)
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setMoveRecency(recencyMultiplier)
+      setMoveRound(roundMultiplier)
+    }, MOVE_SEARCH_DELAY_MS)
+    return () => window.clearTimeout(id)
+  }, [recencyMultiplier, roundMultiplier])
 
   const daysByPair = useMemo(() => {
     const map = new Map<string, number>()
@@ -372,7 +401,7 @@ export default function App() {
         }
       }
       const ri = rounds.get(set.id) ?? 1
-      const heat = computeHeat(pair.days, ri, deferredRecency, deferredRound)
+      const heat = computeHeat(pair.days, ri, recencyMultiplier, roundMultiplier)
       const band = heatBand(heat)
       return {
         set,
@@ -386,7 +415,7 @@ export default function App() {
         days: pair.days,
       }
     })
-  }, [loaded, pairs, projectedRows, rounds, deferredRecency, deferredRound])
+  }, [loaded, pairs, projectedRows, rounds, recencyMultiplier, roundMultiplier])
 
   const sortedSets = useMemo(() => {
     return [...scoredSets].sort((a, b) => b.heat - a.heat)
@@ -412,8 +441,8 @@ export default function App() {
         sets: loaded.sets,
         pairHeat: pairLookup,
         daysByPair: finiteDays,
-        recencyMultiplier: deferredRecency,
-        roundMultiplier: deferredRound,
+        recencyMultiplier: moveRecency,
+        roundMultiplier: moveRound,
         focusSetId: selectedSetId,
         bracketType: loaded.phase.bracketType,
       }),
@@ -424,8 +453,8 @@ export default function App() {
     pairs,
     daysByPair,
     pairLookup,
-    deferredRecency,
-    deferredRound,
+    moveRecency,
+    moveRound,
     selectedSetId,
   ])
 
@@ -463,7 +492,9 @@ export default function App() {
     if ([...pairs.values()].some((pair) => pair.status === 'checking')) return null
     const actual = scoredSets.map((row) => ({
       seedKey: seedKeyOf(row.set),
-      players: playerKeyOf(row.set.slots.map((slot) => slot.playerId)),
+      players: playerKeyOf(
+        row.slots.map((slot) => (slot.kind === 'player' ? slot.playerId : null)),
+      ),
       heat: row.heat,
     }))
     return bracketChanged(previewSnap.expected, actual)

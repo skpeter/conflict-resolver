@@ -276,7 +276,7 @@ export function listSuggestedMoves(args: {
       const shifted = playersWhoShift(ordered, seed.seedNum, delta)
       const seedNumTo = seed.seedNum + delta
       candidates.push({
-        id: `${seed.seedNum}->${seedNumTo}`,
+        id: `${seed.seedId}:${seed.seedNum}->${seedNumTo}`,
         seedNumFrom: seed.seedNum,
         seedNumTo,
         entrantTag: seed.gamerTag ?? 'player',

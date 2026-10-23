@@ -54,6 +54,16 @@ function playerFromSlot(slot: SetSlot, seedNum: number | null): ProjectedPlayer 
   }
 }
 
+function slotFromHolder(
+  holder: SeedSlot | undefined,
+  seedNum: number,
+  projected: boolean,
+): ProjectedSlot {
+  if (holder?.entrantId && !holder.playerId) return { kind: 'unresolved' }
+  if (!holder?.playerId) return { kind: 'bye' }
+  return playerFromSeed(holder, seedNum, projected) ?? { kind: 'bye' }
+}
+
 function playerFromSeed(
   seed: SeedSlot,
   seedNum: number,
@@ -145,23 +155,18 @@ export function projectBracket(
   function placed(slot: SetSlot): ProjectedSlot {
     if (mapping && slot.seedNum != null) {
       const holder = holderAt(slot.seedNum)
-      if (!holder?.playerId) return { kind: 'bye' }
-      const player = playerFromSeed(
+      return slotFromHolder(
         holder,
         slot.seedNum,
-        holder.playerId !== slot.playerId,
+        holder?.playerId != null && holder.playerId !== slot.playerId,
       )
-      return player ?? { kind: 'bye' }
     }
     if (slot.playerId) {
       const player = playerFromSlot(slot, seedNumFor(slot.playerId, slot.seedNum))
       return player ?? { kind: 'unresolved' }
     }
     if (slot.seedNum != null) {
-      const holder = holderAt(slot.seedNum)
-      if (!holder?.playerId) return { kind: 'bye' }
-      const player = playerFromSeed(holder, slot.seedNum, true)
-      return player ?? { kind: 'bye' }
+      return slotFromHolder(holderAt(slot.seedNum), slot.seedNum, true)
     }
     if (slot.entrantId && !slot.playerId) return { kind: 'unresolved' }
     return { kind: 'bye' }
@@ -182,11 +187,10 @@ export function projectBracket(
       if (mapping) {
         if (slotSeedNum == null) return { kind: 'unresolved' }
         const holder = holderAt(slotSeedNum)
-        if (!holder?.playerId) return { kind: 'bye' }
-        return (
-          playerFromSeed(holder, slotSeedNum, holder.playerId !== slot.playerId) ?? {
-            kind: 'bye',
-          }
+        return slotFromHolder(
+          holder,
+          slotSeedNum,
+          holder?.playerId != null && holder.playerId !== slot.playerId,
         )
       }
       if (!seed?.playerId) return { kind: 'unresolved' }
