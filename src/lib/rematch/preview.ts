@@ -20,8 +20,9 @@ export function playerKeyOf(players: Array<string | null>): string {
 }
 
 /**
- * True when the refreshed bracket's seeded sets disagree with the preview
- * that was sent. Sets with no seed number are not invented into the compare.
+ * True when the refreshed bracket's seeded pairs disagree with the preview
+ * that was sent. Sets with no seed number are left out. Heat is left out:
+ * an upcoming event rescores as of now, so a later refresh is not a new bracket.
  */
 export function bracketChanged(
   expected: BracketRow[],
@@ -36,7 +37,6 @@ export function bracketChanged(
     const found = act.get(row.seedKey)
     if (!found) return true
     if (found.players !== row.players) return true
-    if (Math.abs(found.heat - row.heat) > 1e-6) return true
   }
   return false
 }

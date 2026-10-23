@@ -1,5 +1,6 @@
 import {
   ELIM_BRACKET_TYPES,
+  HISTORY_MAX_PAGES,
   HISTORY_PAGE_SIZE,
   ageDays,
   classifyHistoryPage,
@@ -281,8 +282,10 @@ export type PairHistoryResult =
     }
 
 /**
- * Two parallel lookups: completed state [3], unfinished [2,4,6].
- * Each walks at most 5 pages. Full fifth page still in window → incomplete.
+ * Split path walks completed state [3] and unfinished [2, 4, 6] in parallel.
+ * Combined path asks for all four states in one walk.
+ * Either path stops after HISTORY_MAX_PAGES. A full last page still inside
+ * the window is incomplete.
  */
 export type HistoryFetchOptions = {
   perPage?: number
@@ -303,6 +306,15 @@ export async function fetchPairHistory(
   const { lowerId, higherId } = orderedPlayerIds(playerA, playerB)
   const perPage = options?.perPage ?? HISTORY_PAGE_SIZE
   if (options?.combineStates) {
+    if (prior?.completed && prior?.unfinished) {
+      return resultFromLookups(
+        { sets: prior.completed, failed: false, incomplete: false },
+        { sets: prior.unfinished, failed: false, incomplete: false },
+        nowMs,
+        timeZone,
+        excludeEventId,
+      )
+    }
     const combined = await walkLookup(
       client,
       lowerId,
@@ -311,18 +323,20 @@ export async function fetchPairHistory(
       nowMs,
       perPage,
     )
-    const completedSets = combined.sets.filter((set) => set.state === 3)
-    const unfinishedSets = combined.sets.filter((set) => set.state !== 3)
+    const completedSets =
+      prior?.completed ?? combined.sets.filter((set) => set.state === 3)
+    const unfinishedSets =
+      prior?.unfinished ?? combined.sets.filter((set) => set.state !== 3)
     return resultFromLookups(
       {
         sets: completedSets,
-        failed: combined.failed,
-        incomplete: combined.incomplete,
+        failed: prior?.completed ? false : combined.failed,
+        incomplete: prior?.completed ? false : combined.incomplete,
       },
       {
         sets: unfinishedSets,
-        failed: combined.failed,
-        incomplete: combined.incomplete,
+        failed: prior?.unfinished ? false : combined.failed,
+        incomplete: prior?.unfinished ? false : combined.incomplete,
       },
       nowMs,
       timeZone,
@@ -501,10 +515,10 @@ async function walkLookup(
 }> {
   const sets: HistorySet[] = []
   try {
-    for (let page = 1; page <= 5; page += 1) {
+    for (let page = 1; page <= HISTORY_MAX_PAGES; page += 1) {
       const data = await client.request<{
         player: {
-          sets: { nodes: H2HNode[] } | null
+          sets: { nodes: H2HNode[] | null } | null
         } | null
       }>(H2H_SETS, {
         playerId: lowerId,
@@ -513,7 +527,11 @@ async function walkLookup(
         perPage,
         state,
       })
-      const nodes = data.player?.sets?.nodes ?? []
+      const setsField = data.player?.sets
+      const nodes = setsField?.nodes
+      if (data.player == null || setsField == null || nodes == null) {
+        return { sets, failed: true, incomplete: false }
+      }
       const mapped = nodes
         .map(mapHistorySet)
         .filter((s): s is HistorySet => s != null)
