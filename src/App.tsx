@@ -9,6 +9,7 @@ import {
   abandonCheckingPairs,
   claimWrite,
   computeHeat,
+  formatHeat,
   heatBand,
   isAuthError,
   describeMovesCard,
@@ -742,7 +743,7 @@ export default function App() {
                       <div className="mt-1 text-base text-zinc-700">
                         {row.set.fullRoundText ?? 'Set'}
                         {row.state === 'ready' && row.heat > 0
-                          ? ` · heat ${row.heat.toFixed(3)}`
+                          ? ` · heat ${formatHeat(row.heat)}`
                           : null}
                       </div>
                     </button>
@@ -834,7 +835,7 @@ export default function App() {
                 {selectedMove.preview.map((p) => (
                   <p key={p.setId}>
                     {p.kind === 'heat'
-                      ? `${p.before} → ${p.after} (${p.oldHeat?.toFixed(3)} → ${p.newHeat?.toFixed(3)})`
+                      ? `${p.before} → ${p.after} (${formatHeat(p.oldHeat ?? 0)} → ${formatHeat(p.newHeat ?? 0)})`
                       : p.kind === 'bye-changed'
                         ? `${p.before} → ${p.after} (bye changed)`
                         : `${p.before} → ${p.after}`}

@@ -1,4 +1,4 @@
-import { computeHeat } from './heat.ts'
+import { computeHeat, formatHeat } from './heat.ts'
 import { placementDropNotes } from './placement.ts'
 import { applySeedShift, hottestHeat, pairKey } from './pairs.ts'
 import { playerKeyOf, seedKeyOf } from './preview.ts'
@@ -77,7 +77,7 @@ export function describeSuggestedMove(move: SuggestedMove): string {
     slide = `Move ${mover} to seed ${move.seedNumTo}. ${chain}.`
   }
   if (move.setHeatBefore == null || move.setHeatAfter == null) return slide
-  return `${slide} This set ${move.setHeatBefore.toFixed(3)} → ${move.setHeatAfter.toFixed(3)}.`
+  return `${slide} This set ${formatHeat(move.setHeatBefore)} → ${formatHeat(move.setHeatAfter)}.`
 }
 
 function playersWhoShift(
@@ -105,9 +105,9 @@ export function describeMovesCard(moves: SuggestedMove[]): string {
   const low = Math.min(...moves.map((move) => move.newHottest))
   const high = Math.max(...moves.map((move) => move.newHottest))
   if (Math.abs(high - low) < 1e-9) {
-    return `These moves cool this set. Hottest heat left on the bracket: ${low.toFixed(3)}.`
+    return `These moves cool this set. Hottest heat left on the bracket: ${formatHeat(low)}.`
   }
-  return `These moves cool this set. Hottest heat left on the bracket is ${low.toFixed(3)} to ${high.toFixed(3)}, depending on the move.`
+  return `These moves cool this set. Hottest heat left on the bracket is ${formatHeat(low)} to ${formatHeat(high)}, depending on the move.`
 }
 
 function sameBracket(

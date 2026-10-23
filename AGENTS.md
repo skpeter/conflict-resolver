@@ -1,6 +1,7 @@
 ## Learned User Preferences
 
 - Score a rematch by how recently that pair played and how early the set sits in the bracket. The organizer view is a heat map; tapping a set opens the last meeting.
+- A round-2 set where one player is projected because of a bye (a bye prerequisite, or a bye set start.gg omitted) heats like round 1, because players do not see the bye. The set after that stays round 3. Do not score that match as round 2, and do not switch the shorter real chain to Math.max.
 - When checking a past event, score history as of that event's start and ignore later meetings and that event's own sets. Upcoming events stay as of now. Completed events are how the algorithm gets validated.
 - Later rounds must include projected matchups from the initial seeding for both past and upcoming events. start.gg does not return those projections, and a later slot that is still empty still needs heat so round 2 and beyond can be seeded.
 - Show seed suggestions only for the selected set, and keep them small enough that they do not drastically change the original seeding. Push seeds only while no set in the phase has started; after that, edits are manual, and the bracket is never reset.

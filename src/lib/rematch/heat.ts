@@ -18,3 +18,11 @@ export function heatBand(heat: number): HeatBand {
   if (heat > 0) return 'warm'
   return 'plain'
 }
+
+/** The stored score stays 0–1. Organizers see that score as a percent. */
+export function formatHeat(heat: number): string {
+  const percent = Math.round(heat * 100)
+  if (heat > 0 && percent <= 0) return '<1%'
+  if (percent >= 100) return '100%'
+  return `${Math.max(0, percent)}%`
+}

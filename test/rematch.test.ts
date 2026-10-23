@@ -10,6 +10,7 @@ import {
   claimWrite,
   classifyHistoryPage,
   computeHeat,
+  formatHeat,
   exactDayCount,
   fillMissingSeedNums,
   heatBand,
@@ -160,6 +161,15 @@ describe('heat', () => {
     assert.equal(heatBand(0.4375), 'hot')
     assert.equal(heatBand(0.13), 'warm')
     assert.equal(heatBand(0), 'plain')
+  })
+
+  it('shows the 0–1 score as a percent', () => {
+    assert.equal(formatHeat(0), '0%')
+    assert.equal(formatHeat(0.25), '25%')
+    assert.equal(formatHeat(0.331), '33%')
+    assert.equal(formatHeat(0.5), '50%')
+    assert.equal(formatHeat(1), '100%')
+    assert.equal(formatHeat(0.004), '<1%')
   })
 })
 
@@ -1176,7 +1186,7 @@ describe('focused moves', () => {
     assert.ok(kept.newHottest > kept.setHeatAfter)
     const line = describeSuggestedMove(kept)
     assert.match(line, /Swap C \(seed 3\) with D \(seed 4\)/)
-    assert.match(line, /This set \d\.\d{3} → \d\.\d{3}/)
+    assert.match(line, /This set \d+% → \d+%/)
     assert.equal(line.includes('Hottest'), false)
     assert.equal(
       describeSuggestedMove({
@@ -1191,15 +1201,15 @@ describe('focused moves', () => {
         setHeatBefore: 0.331,
         setHeatAfter: 0,
       } as SuggestedMove),
-      'Move Yip (seed 22) to seed 24. Finnmacbo (seed 23) moves to seed 22, and Acgamer28 (seed 24) moves to seed 23. This set 0.331 → 0.000.',
+      'Move Yip (seed 22) to seed 24. Finnmacbo (seed 23) moves to seed 22, and Acgamer28 (seed 24) moves to seed 23. This set 33% → 0%.',
     )
     assert.match(
       describeMovesCard(moves),
-      /Hottest heat left on the bracket is \d\.\d{3} to \d\.\d{3}, depending on the move/,
+      /Hottest heat left on the bracket is \d+% to \d+%, depending on the move/,
     )
     assert.match(
       describeMovesCard([kept]),
-      new RegExp(`Hottest heat left on the bracket: ${kept.newHottest.toFixed(3)}`),
+      new RegExp(`Hottest heat left on the bracket: ${formatHeat(kept.newHottest).replace('%', '\\%')}`),
     )
   })
 })
