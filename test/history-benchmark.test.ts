@@ -245,6 +245,59 @@ describe('history transport benchmark', () => {
 })
 
 describe('pair history retry', () => {
+  it('retries a page that exceeds 1000 objects at a smaller size', async () => {
+    const client = {
+      async request(_query: string, variables?: Record<string, unknown>) {
+        const perPage = Number(variables?.perPage)
+        if (perPage > 25) {
+          throw new Error(
+            'Your query complexity is too high. A maximum of 1000 objects may be returned by each request. (actual: 1221)',
+          )
+        }
+        return { player: { sets: { nodes: [meeting()] } } }
+      },
+    } as unknown as StartGgClient
+    const result = await fetchPairHistory(
+      client,
+      '10',
+      '20',
+      NOW_MS,
+      'UTC',
+      undefined,
+      null,
+      { perPage: 100, combineStates: true },
+    )
+    assert.equal(result.kind, 'heat')
+  })
+
+  it('keeps the other pair when one page cannot shrink enough', async () => {
+    const seen: string[] = []
+    const client = {
+      async request(query: string, variables?: Record<string, unknown>) {
+        if (query.includes('h1:') || variables?.p0 === '30') {
+          throw new Error(
+            'Your query complexity is too high. A maximum of 1000 objects may be returned by each request. (actual: 1221)',
+          )
+        }
+        return { h0: { sets: { nodes: [meeting()] } } }
+      },
+    } as unknown as StartGgClient
+    await loadAliasPairHistories(
+      client,
+      [
+        { a: '10', b: '20' },
+        { a: '30', b: '40' },
+      ],
+      NOW_MS,
+      'UTC',
+      null,
+      (_key, result) => {
+        seen.push(result.kind)
+      },
+    )
+    assert.deepEqual(seen, ['heat', 'history-failed'])
+  })
+
   it('keeps a null payload failed and an empty page cold', async () => {
     const replies = [
       { player: null },

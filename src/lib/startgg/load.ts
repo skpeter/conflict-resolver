@@ -1,9 +1,9 @@
 import {
   ELIM_BRACKET_TYPES,
-  HISTORY_MAX_PAGES,
   HISTORY_PAGE_SIZE,
   ageDays,
   classifyHistoryPage,
+  historyPageLimit,
   fillMissingSeedNums,
   historyAsOf,
   orderedPlayerIds,
@@ -19,7 +19,7 @@ import type {
   Receipt,
   SeedSlot,
 } from '../rematch/types.ts'
-import { StartGgClient } from './client.ts'
+import { StartGgClient, isQueryComplexityError } from './client.ts'
 import {
   EVENT_PHASES,
   H2H_SETS,
@@ -284,8 +284,10 @@ export type PairHistoryResult =
 /**
  * Split path walks completed state [3] and unfinished [2, 4, 6] in parallel.
  * Combined path asks for all four states in one walk.
- * Either path stops after HISTORY_MAX_PAGES. A full last page still inside
- * the window is incomplete.
+ * Either path stops after HISTORY_MAX_PAGES at the requested page size.
+ * A page start.gg rejects for more than 1000 objects is retried smaller,
+ * and the walk keeps going until it has covered the same number of sets.
+ * A full last page still inside the window is incomplete.
  */
 export type HistoryFetchOptions = {
   perPage?: number
@@ -514,19 +516,31 @@ async function walkLookup(
   incomplete: boolean
 }> {
   const sets: HistorySet[] = []
+  const budgetPageSize = perPage
+  let pageSize = perPage
+  let maxPages = historyPageLimit(pageSize, budgetPageSize)
   try {
-    for (let page = 1; page <= HISTORY_MAX_PAGES; page += 1) {
-      const data = await client.request<{
+    for (let page = 1; page <= maxPages; page += 1) {
+      let data: {
         player: {
           sets: { nodes: H2HNode[] | null } | null
         } | null
-      }>(H2H_SETS, {
-        playerId: lowerId,
-        opponentId: higherId,
-        page,
-        perPage,
-        state,
-      })
+      }
+      try {
+        data = await client.request(H2H_SETS, {
+          playerId: lowerId,
+          opponentId: higherId,
+          page,
+          perPage: pageSize,
+          state,
+        })
+      } catch (err) {
+        if (!isQueryComplexityError(err) || pageSize <= 1) throw err
+        pageSize = Math.max(1, Math.floor(pageSize / 2))
+        maxPages = historyPageLimit(pageSize, budgetPageSize)
+        page -= 1
+        continue
+      }
       const setsField = data.player?.sets
       const nodes = setsField?.nodes
       if (data.player == null || setsField == null || nodes == null) {
@@ -550,7 +564,8 @@ async function walkLookup(
         nodes.length,
         clocksMs,
         nowMs,
-        perPage,
+        pageSize,
+        maxPages,
       )
       if (decision === 'incomplete') {
         return { sets, failed: false, incomplete: true }

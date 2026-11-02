@@ -9,6 +9,7 @@ import {
   buildPairList,
   claimWrite,
   classifyHistoryPage,
+  historyPageLimit,
   computeHeat,
   formatHeat,
   exactDayCount,
@@ -29,10 +30,12 @@ import {
   HISTORY_FAILED_MOVES,
   describeMovesCard,
   describeSuggestedMove,
+  heatedMovePreview,
   historyBlocksMoves,
   listSuggestedMoves,
   movesForSelectedSet,
   placementDropNote,
+  keepsPlacementTier,
   tiedPlace,
   projectBracket,
   projectedPlayerIds,
@@ -657,6 +660,15 @@ describe('history page', () => {
     assert.equal(classifyHistoryPage(1, 5, [now - DAY], now, 100), 'done')
     assert.equal(classifyHistoryPage(1, 100, [now - DAY], now, 100), 'continue')
   })
+
+  it('keeps a smaller page walking until it covers the wide budget', () => {
+    const clocks = Array.from({ length: 50 }, () => now - 9 * DAY)
+    assert.equal(historyPageLimit(100, 100), 5)
+    assert.equal(historyPageLimit(50, 100), 10)
+    assert.equal(historyPageLimit(5), 5)
+    assert.equal(classifyHistoryPage(5, 50, clocks, now, 50, 10), 'continue')
+    assert.equal(classifyHistoryPage(10, 50, clocks, now, 50, 10), 'incomplete')
+  })
 })
 
 describe('write and generation gates', () => {
@@ -1134,6 +1146,27 @@ describe('focused moves', () => {
     assert.ok(kept.newHottest < 0.5)
   })
 
+  it('still suggests a slide after the match is reported', () => {
+    const reported = sets.map((set) => ({
+      ...set,
+      winnerId: 'e1',
+      hasReportedGames: true,
+    }))
+    const moves = listSuggestedMoves({
+      seeds,
+      sets: reported,
+      daysByPair: days,
+      focusSetId: 'wf',
+      pairHeat: (a, b) => {
+        const key = pairKey(a, b)
+        if (!days.has(key)) return { missing: true }
+        return { ok: true, heat: computeHeat(days.get(key)!, 1) }
+      },
+    })
+    assert.ok(moves.length > 0)
+    assert.ok(moves.some((move) => move.seedNumFrom === 2 && move.seedNumTo === 3))
+  })
+
   it('hides suggestions until a set is selected', () => {
     assert.deepEqual(movesForSelectedSet(null, movesFor('wf')), [])
     assert.ok(movesForSelectedSet('wf', movesFor('wf')).length > 0)
@@ -1186,7 +1219,7 @@ describe('focused moves', () => {
     assert.ok(kept.newHottest > kept.setHeatAfter)
     const line = describeSuggestedMove(kept)
     assert.match(line, /Swap C \(seed 3\) with D \(seed 4\)/)
-    assert.match(line, /This set \d+% → \d+%/)
+    assert.equal(line.includes('This set'), kept.setHeatAfter > 0)
     assert.equal(line.includes('Hottest'), false)
     assert.equal(
       describeSuggestedMove({
@@ -1201,15 +1234,86 @@ describe('focused moves', () => {
         setHeatBefore: 0.331,
         setHeatAfter: 0,
       } as SuggestedMove),
-      'Move Yip (seed 22) to seed 24. Finnmacbo (seed 23) moves to seed 22, and Acgamer28 (seed 24) moves to seed 23. This set 33% → 0%.',
+      'Move Yip (seed 22) to seed 24. Finnmacbo (seed 23) moves to seed 22, and Acgamer28 (seed 24) moves to seed 23.',
+    )
+    assert.match(
+      describeSuggestedMove({
+        entrantTag: 'Yip',
+        seedNumFrom: 22,
+        seedNumTo: 23,
+        shift: 1,
+        shifted: [{ tag: 'Finnmacbo', seedNumFrom: 23, seedNumTo: 22 }],
+        setHeatBefore: 0.205,
+        setHeatAfter: 0.086,
+      } as SuggestedMove),
+      /This set 21% → 9%/,
     )
     assert.match(
       describeMovesCard(moves),
-      /Hottest heat left on the bracket is \d+% to \d+%, depending on the move/,
+      /Hottest heat left on the bracket is \d+% to \d+%, depending on the move\. Click a move to preview possible new heated sets\./,
     )
     assert.match(
       describeMovesCard([kept]),
-      new RegExp(`Hottest heat left on the bracket: ${formatHeat(kept.newHottest).replace('%', '\\%')}`),
+      new RegExp(
+        `Hottest heat left on the bracket: ${formatHeat(kept.newHottest).replace('%', '\\%')}\\. Click a move to preview possible new heated sets\\.`,
+      ),
+    )
+  })
+
+  it('previews only matchups that carry heat', () => {
+    const rows = heatedMovePreview([
+      {
+        setId: 'zero',
+        before: 'Acgamer28 (seed 24) vs Okay (seed 41)',
+        after: 'Finnmacbo (seed 24) vs Okay (seed 41)',
+        kind: 'heat',
+        oldHeat: 0,
+        newHeat: 0,
+      },
+      {
+        setId: 'cooled',
+        before: 'Finnmacbo (seed 23) vs Lycan (seed 42)',
+        after: 'Yip (seed 23) vs Lycan (seed 42)',
+        kind: 'heat',
+        oldHeat: 0.205,
+        newHeat: 0,
+      },
+      {
+        setId: 'heated',
+        before: 'SKPeter (seed 9) vs Yip (seed 22)',
+        after: 'SKPeter (seed 9) vs Finnmacbo (seed 22)',
+        kind: 'heat',
+        oldHeat: 0,
+        newHeat: 0.086,
+      },
+      {
+        setId: 'bye',
+        before: 'Yip (seed 22) vs bye',
+        after: 'Acgamer28 (seed 22) vs bye',
+        kind: 'bye-other',
+        oldHeat: 0,
+        newHeat: 0,
+      },
+      {
+        setId: 'bye-swap',
+        before: 'Finnmacbo (seed 23) vs bye',
+        after: 'Yip (seed 23) vs bye',
+        kind: 'bye-changed',
+        oldHeat: 0.2,
+        newHeat: 0,
+      },
+      {
+        setId: 'bye-to-heat',
+        before: 'Finnmacbo (seed 23) vs bye',
+        after: 'Finnmacbo (seed 23) vs Lycan (seed 42)',
+        kind: 'bye-changed',
+        oldHeat: 0,
+        newHeat: 0.4,
+      },
+    ])
+    assert.deepEqual(
+      rows.map((row) => row.setId),
+      ['cooled', 'heated', 'bye-to-heat'],
     )
   })
 })
@@ -1246,6 +1350,69 @@ describe('placement tiers', () => {
   it('stays quiet for a format without seed placement tiers', () => {
     assert.equal(placementDropNote('ROUND_ROBIN', 'Acgamer28', 24, 25), null)
     assert.equal(placementDropNote(null, 'Acgamer28', 24, 25), null)
+  })
+
+  it('shows a same-tier swap that still heats another set', () => {
+    const seeds = [
+      phaseSeed(9, '9', 'A'),
+      phaseSeed(10, '10', 'B'),
+      phaseSeed(11, '11', 'C'),
+      phaseSeed(12, '12', 'D'),
+      phaseSeed(13, '13', 'E'),
+    ]
+    const sets = [
+      phaseSet('focus', 'Winners Round 1', [
+        phaseSlot({ slotIndex: 1, seedNum: 9, entrantId: 'e9', playerId: '9', gamerTag: 'A' }),
+        phaseSlot({ slotIndex: 2, seedNum: 12, entrantId: 'e12', playerId: '12', gamerTag: 'D' }),
+      ]),
+      phaseSet('neighbor', 'Winners Round 1', [
+        phaseSlot({ slotIndex: 1, seedNum: 10, entrantId: 'e10', playerId: '10', gamerTag: 'B' }),
+        phaseSlot({ slotIndex: 2, seedNum: 11, entrantId: 'e11', playerId: '11', gamerTag: 'C' }),
+      ]),
+    ]
+    const heatByPair = new Map<string, number>([
+      ['9|12', 0.8],
+      ['9|11', 0.25],
+      ['10|12', 0.9],
+      ['11|12', 0.95],
+    ])
+    const moves = listSuggestedMoves({
+      seeds,
+      sets,
+      daysByPair: new Map(),
+      focusSetId: 'focus',
+      bracketType: 'DOUBLE_ELIMINATION',
+      pairHeat: (a, b) => {
+        const heat = heatByPair.get(pairKey(a, b))
+        if (heat == null) return { missing: true }
+        return { ok: true, heat }
+      },
+    })
+    const sameTier = moves.find((move) =>
+      keepsPlacementTier('DOUBLE_ELIMINATION', [
+        { fromSeed: move.seedNumFrom, toSeed: move.seedNumTo },
+        ...move.shifted.map((player) => ({
+          fromSeed: player.seedNumFrom,
+          toSeed: player.seedNumTo,
+        })),
+      ]),
+    )
+    const dropped = moves.find((move) => move.placementNotes.length > 0)
+    assert.ok(sameTier)
+    assert.ok(dropped)
+    assert.equal(sameTier.placementNotes.length, 0)
+    assert.ok(sameTier.setHeatAfter != null && sameTier.setHeatAfter < 0.8)
+    assert.ok(sameTier.newHottest >= 0.9)
+    assert.ok(moves.indexOf(dropped) < moves.indexOf(sameTier))
+    assert.ok(
+      moves.every(
+        (move) =>
+          move.setHeatBefore != null &&
+          move.setHeatAfter != null &&
+          move.setHeatAfter < move.setHeatBefore,
+      ),
+    )
+    assert.ok(dropped.placementNotes.some((note) => note.includes('tied for 13th')))
   })
 
   it('puts the drop on the suggestion that crosses a double-elim tier', () => {

@@ -1,6 +1,6 @@
 import {
-  HISTORY_MAX_PAGES,
   classifyHistoryPage,
+  historyPageLimit,
   orderedPlayerIds,
   pairKey,
   setClock,
@@ -66,14 +66,14 @@ export function receiptSignature(result: PairHistoryResult): string {
   return `failed:${result.label}`
 }
 
-export function buildAliasQuery(count: number): string {
+export function buildAliasQuery(count: number, perPage = WIDE_PAGE_SIZE): string {
   const defs = ['$page: Int!']
   const fields: string[] = []
   for (let i = 0; i < count; i += 1) {
     defs.push(`$p${i}: ID!`, `$o${i}: ID!`)
     fields.push(`
       h${i}: player(id: $p${i}) {
-        sets(page: $page, perPage: ${WIDE_PAGE_SIZE}, opponentId: $o${i}, filters: { state: [2, 3, 4, 6] }) {
+        sets(page: $page, perPage: ${perPage}, opponentId: $o${i}, filters: { state: [2, 3, 4, 6] }) {
           nodes { ${HISTORY_SET_FIELDS} }
         }
       }
@@ -267,6 +267,13 @@ async function aliasReceipts(
   return receipts
 }
 
+type AliasPage = {
+  sets: HistorySet[]
+  nodeCount: number
+  missing: boolean
+  pageSize: number
+}
+
 async function walkAliasBatches(
   client: StartGgClient,
   pairs: Pair[],
@@ -281,64 +288,87 @@ async function walkAliasBatches(
   for (let offset = 0; offset < pairs.length; offset += batchSize) {
     if (!current()) return
     const batch = pairs.slice(offset, offset + batchSize)
-    const collected = batch.map(() => [] as HistorySet[])
-    const incomplete = batch.map(() => false)
-    const finished = batch.map(() => false)
-    const failed = batch.map(() => false)
-    for (let page = 1; page <= HISTORY_MAX_PAGES; page += 1) {
+    const slots = batch.map(() => ({
+      sets: [] as HistorySet[],
+      incomplete: false,
+      finished: false,
+      failed: false,
+      pageSize: WIDE_PAGE_SIZE,
+      nextPage: 1,
+    }))
+    while (slots.some((slot) => !slot.finished)) {
       if (!current()) return
-      const indexes = finished.flatMap((done, index) => (done ? [] : [index]))
-      if (indexes.length === 0) break
-      const subset = indexes.map((index) => batch[index])
-      let pages: Array<{ sets: HistorySet[]; nodeCount: number; missing: boolean }>
-      try {
-        pages = await fetchAliasPageSplitting(client, subset, page, current)
-      } catch {
-        indexes.forEach((index) => {
-          failed[index] = true
-          finished[index] = true
-        })
-        continue
-      }
-      pages.forEach((pageResult, subsetIndex) => {
-        const index = indexes[subsetIndex]
-        if (pageResult.missing) {
-          failed[index] = true
-          finished[index] = true
-          return
-        }
-        collected[index].push(...pageResult.sets)
-        const clocks = pageResult.sets.map((set) => {
-          const clock = setClock({
-            completedAt: set.completedAt,
-            eventStartAt: set.eventStartAt,
-          })
-          return clock?.clockMs ?? null
-        })
-        const decision = classifyHistoryPage(
-          page,
-          pageResult.nodeCount,
-          clocks,
-          nowMs,
-          WIDE_PAGE_SIZE,
-        )
-        if (decision === 'incomplete') incomplete[index] = true
-        if (decision !== 'continue') finished[index] = true
+      const groups = new Map<string, number[]>()
+      slots.forEach((slot, index) => {
+        if (slot.finished) return
+        const key = `${slot.pageSize}:${slot.nextPage}`
+        const indexes = groups.get(key) ?? []
+        indexes.push(index)
+        groups.set(key, indexes)
       })
+      for (const indexes of groups.values()) {
+        if (!current()) return
+        const first = slots[indexes[0]]
+        let pages: AliasPage[]
+        try {
+          pages = await fetchAliasPageSplitting(
+            client,
+            indexes.map((index) => batch[index]),
+            first.nextPage,
+            first.pageSize,
+            current,
+          )
+        } catch {
+          for (const index of indexes) {
+            slots[index].failed = true
+            slots[index].finished = true
+          }
+          continue
+        }
+        pages.forEach((pageResult, subsetIndex) => {
+          const slot = slots[indexes[subsetIndex]]
+          if (pageResult.missing) {
+            slot.failed = true
+            slot.finished = true
+            return
+          }
+          slot.pageSize = pageResult.pageSize
+          slot.sets.push(...pageResult.sets)
+          const clocks = pageResult.sets.map((set) => {
+            const clock = setClock({
+              completedAt: set.completedAt,
+              eventStartAt: set.eventStartAt,
+            })
+            return clock?.clockMs ?? null
+          })
+          const maxPages = historyPageLimit(slot.pageSize, WIDE_PAGE_SIZE)
+          const decision = classifyHistoryPage(
+            slot.nextPage,
+            pageResult.nodeCount,
+            clocks,
+            nowMs,
+            slot.pageSize,
+            maxPages,
+          )
+          if (decision === 'incomplete') slot.incomplete = true
+          if (decision === 'continue') slot.nextPage += 1
+          else slot.finished = true
+        })
+      }
     }
     if (!current()) return
     batch.forEach((pair, index) => {
-      const key = pairKey(pair.a, pair.b)
+      const slot = slots[index]
       onPair(
-        key,
-        failed[index]
+        pairKey(pair.a, pair.b),
+        slot.failed
           ? 'transport'
           : receiptFromHistorySets(
-              collected[index],
+              slot.sets,
               nowMs,
               timeZone,
               excludeEventId,
-              incomplete[index],
+              slot.incomplete,
             ),
       )
     })
@@ -349,28 +379,44 @@ async function fetchAliasPageSplitting(
   client: StartGgClient,
   pairs: Pair[],
   page: number,
+  perPage: number,
   shouldContinue?: () => boolean,
-): Promise<Array<{ sets: HistorySet[]; nodeCount: number; missing: boolean }>> {
+): Promise<AliasPage[]> {
   try {
-    return await fetchAliasPage(client, pairs, page)
+    const pages = await fetchAliasPage(client, pairs, page, perPage)
+    return pages.map((result) => ({ ...result, pageSize: perPage }))
   } catch (err) {
     if (shouldContinue && !shouldContinue()) throw err
-    if (pairs.length <= 1 || !isQueryComplexityError(err)) throw err
-    const mid = Math.ceil(pairs.length / 2)
-    const left = await fetchAliasPageSplitting(
+    if (!isQueryComplexityError(err)) throw err
+    if (pairs.length > 1) {
+      const mid = Math.ceil(pairs.length / 2)
+      const left = await fetchAliasPageSplitting(
+        client,
+        pairs.slice(0, mid),
+        page,
+        perPage,
+        shouldContinue,
+      )
+      if (shouldContinue && !shouldContinue()) throw err
+      const right = await fetchAliasPageSplitting(
+        client,
+        pairs.slice(mid),
+        page,
+        perPage,
+        shouldContinue,
+      )
+      return [...left, ...right]
+    }
+    if (perPage <= 1) {
+      return [{ sets: [], nodeCount: 0, missing: true, pageSize: perPage }]
+    }
+    return fetchAliasPageSplitting(
       client,
-      pairs.slice(0, mid),
+      pairs,
       page,
+      Math.max(1, Math.floor(perPage / 2)),
       shouldContinue,
     )
-    if (shouldContinue && !shouldContinue()) throw err
-    const right = await fetchAliasPageSplitting(
-      client,
-      pairs.slice(mid),
-      page,
-      shouldContinue,
-    )
-    return [...left, ...right]
   }
 }
 
@@ -378,6 +424,7 @@ async function fetchAliasPage(
   client: StartGgClient,
   pairs: Pair[],
   page: number,
+  perPage: number,
 ): Promise<Array<{ sets: HistorySet[]; nodeCount: number; missing: boolean }>> {
   const variables: Record<string, unknown> = { page }
   pairs.forEach((pair, index) => {
@@ -387,7 +434,7 @@ async function fetchAliasPage(
   })
   const data = await client.request<
     Record<string, { sets: { nodes: H2HNode[] } | null } | null>
-  >(buildAliasQuery(pairs.length), variables)
+  >(buildAliasQuery(pairs.length, perPage), variables)
   return pairs.map((_, index) => {
     const entry = data[`h${index}`]
     const nodes = entry?.sets?.nodes

@@ -14,6 +14,7 @@ import {
   isAuthError,
   describeMovesCard,
   describeSuggestedMove,
+  heatedMovePreview,
   HISTORY_FAILED_MOVES,
   historyBlocksMoves,
   listSuggestedMoves,
@@ -460,6 +461,7 @@ export default function App() {
   ])
 
   const selectedMove = moves.find((m) => m.id === selectedMoveId) ?? null
+  const heatedPreview = selectedMove ? heatedMovePreview(selectedMove.preview) : []
 
   const hottestReceiptId =
     sortedSets.find(
@@ -832,15 +834,15 @@ export default function App() {
 
             {selectedMove ? (
               <div className="mt-3 space-y-1 text-base text-zinc-700">
-                {selectedMove.preview.map((p) => (
-                  <p key={p.setId}>
-                    {p.kind === 'heat'
-                      ? `${p.before} → ${p.after} (${formatHeat(p.oldHeat ?? 0)} → ${formatHeat(p.newHeat ?? 0)})`
-                      : p.kind === 'bye-changed'
-                        ? `${p.before} → ${p.after} (bye changed)`
-                        : `${p.before} → ${p.after}`}
-                  </p>
-                ))}
+                {heatedPreview.length === 0 ? (
+                  <p>This move does not change a heated set.</p>
+                ) : (
+                  heatedPreview.map((p) => (
+                    <p key={p.setId}>
+                      {`${p.before} → ${p.after} (${formatHeat(p.oldHeat ?? 0)} → ${formatHeat(p.newHeat ?? 0)})`}
+                    </p>
+                  ))
+                )}
               </div>
             ) : null}
 

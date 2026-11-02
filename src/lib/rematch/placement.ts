@@ -52,6 +52,21 @@ function placePhrase(format: BracketFormat, seed: number): string | null {
   return shares ? `tied for ${word}` : word
 }
 
+/** True when every shifted player stays in the same placement tier. */
+export function keepsPlacementTier(
+  bracketType: string | null | undefined,
+  changes: Array<{ fromSeed: number; toSeed: number }>,
+): boolean {
+  const format = bracketFormat(bracketType)
+  if (format === 'other' || changes.length === 0) return false
+  for (const change of changes) {
+    const before = tiedPlace(format, change.fromSeed)
+    const after = tiedPlace(format, change.toSeed)
+    if (before == null || after == null || before !== after) return false
+  }
+  return true
+}
+
 /** A sentence when this player moves into a worse placement tier. */
 export function placementDropNote(
   bracketType: string | null | undefined,

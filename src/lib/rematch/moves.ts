@@ -1,5 +1,5 @@
 import { computeHeat, formatHeat } from './heat.ts'
-import { placementDropNotes } from './placement.ts'
+import { keepsPlacementTier, placementDropNotes } from './placement.ts'
 import { applySeedShift, hottestHeat, pairKey } from './pairs.ts'
 import { playerKeyOf, seedKeyOf } from './preview.ts'
 import {
@@ -76,8 +76,19 @@ export function describeSuggestedMove(move: SuggestedMove): string {
       .join(', and ')
     slide = `Move ${mover} to seed ${move.seedNumTo}. ${chain}.`
   }
-  if (move.setHeatBefore == null || move.setHeatAfter == null) return slide
+  if (move.setHeatBefore == null || move.setHeatAfter == null || !(move.setHeatAfter > 0)) {
+    return slide
+  }
   return `${slide} This set ${formatHeat(move.setHeatBefore)} → ${formatHeat(move.setHeatAfter)}.`
+}
+
+/** Clicked list: matchups that carry heat. Bye lines and 0% swaps stay off. */
+export function heatedMovePreview(rows: PreviewRow[]): PreviewRow[] {
+  return rows.filter((row) => {
+    if (row.kind === 'bye-other') return false
+    if (/\bbye\b/i.test(row.after)) return false
+    return (row.oldHeat ?? 0) > 0 || (row.newHeat ?? 0) > 0
+  })
 }
 
 function playersWhoShift(
@@ -100,14 +111,16 @@ function playersWhoShift(
   return others
 }
 
+const PREVIEW_HINT = ' Click a move to preview possible new heated sets.'
+
 /** One line under the moves heading. Same leftover heat is stated once. */
 export function describeMovesCard(moves: SuggestedMove[]): string {
   const low = Math.min(...moves.map((move) => move.newHottest))
   const high = Math.max(...moves.map((move) => move.newHottest))
   if (Math.abs(high - low) < 1e-9) {
-    return `These moves cool this set. Hottest heat left on the bracket: ${formatHeat(low)}.`
+    return `These moves cool this set. Hottest heat left on the bracket: ${formatHeat(low)}.${PREVIEW_HINT}`
   }
-  return `These moves cool this set. Hottest heat left on the bracket is ${formatHeat(low)} to ${formatHeat(high)}, depending on the move.`
+  return `These moves cool this set. Hottest heat left on the bracket is ${formatHeat(low)} to ${formatHeat(high)}, depending on the move.${PREVIEW_HINT}`
 }
 
 function sameBracket(
@@ -150,6 +163,8 @@ export function listSuggestedMoves(args: {
   /**
    * When set, the move must cool this set. Another set may gain heat only
    * while that new heat stays below this set's current heat.
+   * A move that keeps every player in the same placement tier is still shown
+   * when it heats another set.
    */
   focusSetId?: string | null
   /** start.gg phase bracketType. Placement notes follow this format. */
@@ -169,11 +184,18 @@ export function listSuggestedMoves(args: {
   const ordered = [...seeds]
     .filter((s) => s.entrantId)
     .sort((a, b) => a.seedNum - b.seedNum)
+  // Reported results freeze the heat map. Suggestion search still slides the
+  // initial seeding, so a finished event can show the reseed.
+  const seededSets = sets.map((set) =>
+    set.winnerId == null && !set.hasReportedGames
+      ? set
+      : { ...set, winnerId: null, hasReportedGames: false },
+  )
 
-  if (focusSetId && !sets.some((set) => set.id === focusSetId)) return []
+  if (focusSetId && !seededSets.some((set) => set.id === focusSetId)) return []
 
-  const rounds = roundIndexTable(sets)
-  const beforeRows = projectBracket(sets, seeds, null)
+  const rounds = roundIndexTable(seededSets)
+  const beforeRows = projectBracket(seededSets, seeds, null)
   const before = heatsBySet(beforeRows, rounds, pairHeat, daysByPair, multipliers)
   if (before.failed) return []
   const currentHeats: number[] = []
@@ -185,7 +207,7 @@ export function listSuggestedMoves(args: {
   const currentHottest = hottestHeat(currentHeats)
   const beforeById = new Map(beforeRows.map((row) => [row.set.id, row]))
 
-  const candidates: SuggestedMove[] = []
+  const candidates: Array<SuggestedMove & { sameTier: boolean; worsened: boolean }> = []
 
   for (const seed of ordered) {
     if (!seed.playerId) continue
@@ -193,7 +215,7 @@ export function listSuggestedMoves(args: {
       const mapping = applySeedShift(ordered, seed.seedNum, delta)
       if (!mapping) continue
 
-      const afterRows = projectBracket(sets, seeds, mapping)
+      const afterRows = projectBracket(seededSets, seeds, mapping)
       const after = heatsBySet(afterRows, rounds, pairHeat, daysByPair, multipliers)
       if (after.failed) continue
 
@@ -251,9 +273,20 @@ export function listSuggestedMoves(args: {
         })
       }
 
+      const shift = Math.abs(delta) as 1 | 2
+      const shifted = playersWhoShift(ordered, seed.seedNum, delta)
+      const seedNumTo = seed.seedNum + delta
+      const sameTier = keepsPlacementTier(bracketType, [
+        { fromSeed: seed.seedNum, toSeed: seedNumTo },
+        ...shifted.map((player) => ({
+          fromSeed: player.seedNumFrom,
+          toSeed: player.seedNumTo,
+        })),
+      ])
+
       if (focusSetId) {
-        if (!focusSeen || worsened) continue
-        if (!(focusAfter < focusBefore - 1e-9)) continue
+        if (!focusSeen || !(focusAfter < focusBefore - 1e-9)) continue
+        if (worsened && !sameTier) continue
       }
 
       const newHottest = hottestHeat(afterHeats)
@@ -272,10 +305,9 @@ export function listSuggestedMoves(args: {
           return { seedId: s.seedId, seedNum }
         })
 
-      const shift = Math.abs(delta) as 1 | 2
-      const shifted = playersWhoShift(ordered, seed.seedNum, delta)
-      const seedNumTo = seed.seedNum + delta
       candidates.push({
+        sameTier,
+        worsened,
         id: `${seed.seedId}:${seed.seedNum}->${seedNumTo}`,
         seedNumFrom: seed.seedNum,
         seedNumTo,
@@ -312,14 +344,26 @@ export function listSuggestedMoves(args: {
   })
 
   const seen = new Set<string>()
-  const unique: SuggestedMove[] = []
+  const unique: Array<SuggestedMove & { sameTier: boolean; worsened: boolean }> = []
   for (const move of candidates) {
     const key = sameBracket(move.seedMapping)
     if (seen.has(key)) continue
     seen.add(key)
     unique.push(move)
   }
-  return unique.slice(0, 3)
+  const strict = unique.filter((move) => !move.worsened)
+  const kept = (focusSetId ? strict : unique).slice(0, 3)
+  const added = focusSetId
+    ? unique
+        .filter((move) => move.sameTier && move.worsened && !kept.includes(move))
+        .slice(0, 3)
+    : []
+  return [...kept, ...added].map((move) => {
+    const { sameTier, worsened: heatedAnother, ...rest } = move
+    void sameTier
+    void heatedAnother
+    return rest
+  })
 }
 
 /**
