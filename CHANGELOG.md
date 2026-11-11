@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Sign in with start.gg OAuth instead of pasting a personal API token. A Cloudflare Worker exchanges the code; GraphQL still goes from the browser to start.gg.
+
 ## [0.1.1] - 2026-10-22
 
 ### Added

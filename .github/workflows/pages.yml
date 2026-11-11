@@ -41,6 +41,8 @@ jobs:
         run: npm run build
         env:
           VITE_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+          VITE_STARTGG_CLIENT_ID: ${{ vars.VITE_STARTGG_CLIENT_ID }}
+          VITE_OAUTH_WORKER_URL: ${{ vars.VITE_OAUTH_WORKER_URL }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

@@ -56,6 +56,7 @@ export type HistorySet = {
   completedAt: number | null
   startedAt: number | null
   fullRoundText: string | null
+  displayScore: string | null
   winnerId: string | null
   eventName: string
   eventId: string | null

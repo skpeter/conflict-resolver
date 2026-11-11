@@ -19,7 +19,12 @@ query PhaseSeeds($phaseId: ID!, $page: Int!) {
     id
     name
     bracketType
-    event { id startAt }
+    event {
+      id
+      startAt
+      name
+      tournament { name }
+    }
     seeds(query: { page: $page, perPage: 32 }) {
       pageInfo { totalPages }
       nodes {
@@ -77,6 +82,7 @@ export const HISTORY_SET_FIELDS = `
   completedAt
   startedAt
   fullRoundText
+  displayScore
   winnerId
   event {
     id
@@ -94,6 +100,64 @@ export const HISTORY_SET_FIELDS = `
       }
     }
   }
+`
+
+/** currentUser.tournaments is not “organizing” — check owner + entrant name. */
+export const UPCOMING_FOR_ME = `
+query UpcomingForMe($perPage: Int!, $entrantName: String!, $ownerId: ID!) {
+  currentUser {
+    id
+    tournaments(query: {
+      perPage: $perPage
+      sortBy: "startAt asc"
+      filter: { upcoming: true }
+    }) {
+      nodes {
+        id
+        name
+        slug
+        startAt
+        owner { id }
+        events {
+          id
+          name
+          slug
+          startAt
+          entrants(query: { filter: { name: $entrantName }, perPage: 1 }) {
+            nodes { id }
+          }
+        }
+      }
+    }
+  }
+  owned: tournaments(query: {
+    perPage: $perPage
+    sortBy: "startAt asc"
+    filter: { ownerId: $ownerId, upcoming: true }
+  }) {
+    nodes {
+      id
+      name
+      slug
+      startAt
+      events {
+        id
+        name
+        slug
+        startAt
+      }
+    }
+  }
+}
+`
+
+export const CURRENT_USER_PLAYER = `
+query CurrentUserPlayer {
+  currentUser {
+    id
+    player { id gamerTag }
+  }
+}
 `
 
 export const H2H_SETS = `

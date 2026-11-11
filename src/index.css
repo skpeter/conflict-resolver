@@ -4,13 +4,27 @@
 
 @theme {
   --font-sans: 'Source Sans 3', ui-sans-serif, system-ui, sans-serif;
-  --color-heat-hot: #d0d0d0;
-  --color-heat-warm: #e6e6e6;
-  --color-border: #bbb;
-  --color-ink: #222;
-  --color-muted: #555;
-  --color-link: #1a4d8c;
-  --color-link-visited: #5a3d7a;
+  --color-bg: #0a0a0a;
+  --color-surface: #141414;
+  --color-ink: #f0f0f0;
+  --color-muted: #b0b0bc;
+  --color-border: #333333;
+  --color-accent: #b84dc8;
+  --color-accent-strong: #d66de0;
+  --color-brand-orange: #ff8c00;
+  --color-link: #d66de0;
+  --color-link-visited: #9b7ad4;
+  --color-heat-0: #141414;
+  --color-heat-mid: #ff5a4a;
+  --color-heat-1: #ff8c00;
+  --color-heat-ink: #0a0a0a;
+  --color-danger-border: #7f1d1d;
+  --color-danger-bg: #1c0a0a;
+  --color-danger-ink: #fecaca;
+}
+
+html {
+  color-scheme: dark;
 }
 
 html,
@@ -25,7 +39,17 @@ body {
   font-size: 16px;
   line-height: 1.45;
   color: var(--color-ink);
-  background: #f7f7f7;
+  background: var(--color-bg);
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent-strong);
+  outline-offset: 2px;
 }
 
 a {
@@ -34,4 +58,16 @@ a {
 
 a:visited {
   color: var(--color-link-visited);
+}
+
+.row-muted {
+  color: var(--color-muted);
+}
+
+[data-heat] {
+  color: var(--color-heat-ink);
+}
+
+[data-heat] .row-muted {
+  color: rgb(10 10 10 / 0.7);
 }

@@ -12,7 +12,12 @@ import {
   historyPageLimit,
   computeHeat,
   formatHeat,
+  easeInOut,
+  heatFill,
+  heatInkIsDark,
+  heatSwatch,
   exactDayCount,
+  formatAge,
   fillMissingSeedNums,
   heatBand,
   historyAsOf,
@@ -174,6 +179,28 @@ describe('heat', () => {
     assert.equal(formatHeat(1), '100%')
     assert.equal(formatHeat(0.004), '<1%')
   })
+
+  it('fills clear to red to orange with ease-in-out', () => {
+    assert.equal(easeInOut(0), 0)
+    assert.equal(easeInOut(0.5), 0.5)
+    assert.equal(easeInOut(1), 1)
+    assert.ok(easeInOut(0.25) < 0.25)
+    assert.ok(easeInOut(0.75) > 0.75)
+
+    assert.equal(heatFill(0), 'transparent')
+    assert.equal(heatFill(-1), 'transparent')
+    assert.equal(heatFill(0.5), 'rgb(255, 90, 74)')
+    assert.equal(heatFill(1), 'rgb(255, 140, 0)')
+    assert.equal(heatFill(2), 'rgb(255, 140, 0)')
+    // Low heat stays near the dark panel instead of a light gray plate.
+    assert.equal(heatFill(0.01), 'rgb(20, 20, 20)')
+    assert.notEqual(heatFill(0.25), heatFill(0.5))
+    assert.notEqual(heatFill(0.75), heatFill(1))
+    assert.equal(heatInkIsDark(0.1), false)
+    assert.equal(heatInkIsDark(0.5), true)
+    assert.equal(heatSwatch(0.5), 'rgb(255, 90, 74)')
+    assert.equal(heatSwatch(1), 'rgb(255, 140, 0)')
+  })
 })
 
 describe('receipt format', () => {
@@ -187,6 +214,15 @@ describe('receipt format', () => {
   it('shows the exact day count the formula used', () => {
     assert.equal(exactDayCount(9), '9')
     assert.equal(exactDayCount(9.5), '9.5')
+  })
+
+  it('rounds age into days, weeks, and months', () => {
+    assert.equal(formatAge(0), '0 days ago')
+    assert.equal(formatAge(1), '1 day ago')
+    assert.equal(formatAge(4.146238), '4 days ago')
+    assert.equal(formatAge(10), '1 week ago')
+    assert.equal(formatAge(14), '2 weeks ago')
+    assert.equal(formatAge(50), '2 months ago')
   })
 })
 
@@ -1218,7 +1254,7 @@ describe('focused moves', () => {
     assert.ok(kept.setHeatAfter < kept.setHeatBefore)
     assert.ok(kept.newHottest > kept.setHeatAfter)
     const line = describeSuggestedMove(kept)
-    assert.match(line, /Swap C \(seed 3\) with D \(seed 4\)/)
+    assert.match(line, /Swap C \(#3\) with D \(#4\)/)
     assert.equal(line.includes('This set'), kept.setHeatAfter > 0)
     assert.equal(line.includes('Hottest'), false)
     assert.equal(
@@ -1234,7 +1270,7 @@ describe('focused moves', () => {
         setHeatBefore: 0.331,
         setHeatAfter: 0,
       } as SuggestedMove),
-      'Move Yip (seed 22) to seed 24. Finnmacbo (seed 23) moves to seed 22, and Acgamer28 (seed 24) moves to seed 23.',
+      'Move Yip (#22) to #24. Finnmacbo (#23) moves to #22, and Acgamer28 (#24) moves to #23.',
     )
     assert.match(
       describeSuggestedMove({
@@ -1250,14 +1286,9 @@ describe('focused moves', () => {
     )
     assert.match(
       describeMovesCard(moves),
-      /Hottest heat left on the bracket is \d+% to \d+%, depending on the move\. Click a move to preview possible new heated sets\./,
+      /These suggestions swap players around/,
     )
-    assert.match(
-      describeMovesCard([kept]),
-      new RegExp(
-        `Hottest heat left on the bracket: ${formatHeat(kept.newHottest).replace('%', '\\%')}\\. Click a move to preview possible new heated sets\\.`,
-      ),
-    )
+    assert.equal(describeMovesCard(moves), describeMovesCard([kept]))
   })
 
   it('previews only matchups that carry heat', () => {

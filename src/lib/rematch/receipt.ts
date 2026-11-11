@@ -20,6 +20,21 @@ export function exactDayCount(days: number): string {
   return days.toFixed(6).replace(/\.?0+$/, '')
 }
 
+/** Organizer-facing age: rounded days, then weeks, then months. */
+export function formatAge(days: number): string {
+  if (!(days >= 0)) return '0 days ago'
+  if (days < 7) {
+    const n = Math.max(0, Math.round(days))
+    return n === 1 ? '1 day ago' : `${n} days ago`
+  }
+  if (days < 45) {
+    const n = Math.max(1, Math.round(days / 7))
+    return n === 1 ? '1 week ago' : `${n} weeks ago`
+  }
+  const n = Math.max(1, Math.round(days / 30))
+  return n === 1 ? '1 month ago' : `${n} months ago`
+}
+
 /**
  * Last path segment, or the segment after `tournament` / `event` when the
  * API already returned a prefixed slug.

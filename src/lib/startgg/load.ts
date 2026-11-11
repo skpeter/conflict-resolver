@@ -26,6 +26,8 @@ import {
   PHASE_SEEDS,
   PHASE_SETS,
   UPDATE_PHASE_SEEDING,
+  CURRENT_USER_PLAYER,
+  UPCOMING_FOR_ME,
 } from './queries.ts'
 
 export type PhaseInfo = {
@@ -45,6 +47,8 @@ export type LoadedPhase = {
   /** Captured at load so render does not read the clock again. */
   ignoreLaterMeetings: boolean
   eventId: string | null
+  eventName: string
+  tournamentName: string
 }
 
 type SeedNode = {
@@ -88,6 +92,7 @@ export type H2HNode = {
   completedAt: number | null
   startedAt: number | null
   fullRoundText: string | null
+  displayScore: string | null
   winnerId: string | null
   event: {
     id: string | number
@@ -105,6 +110,19 @@ export type H2HNode = {
       }>
     } | null
   }>
+}
+
+/** start.gg marks a DQ in displayScore (e.g. "Player DQ" or "0 - DQ"). */
+export function isDqSet(set: { displayScore?: string | null }): boolean {
+  return /\bDQ\b/i.test(set.displayScore ?? '')
+}
+
+export type UpcomingEventOption = {
+  id: string
+  label: string
+  href: string
+  startAt: number
+  role: 'organizing' | 'playing'
 }
 
 export async function listEliminationPhases(
@@ -135,7 +153,8 @@ export async function loadPhase(
   client: StartGgClient,
   phaseId: string,
 ): Promise<LoadedPhase> {
-  const { seeds, eventId, eventStartAt } = await paginateSeeds(client, phaseId)
+  const { seeds, eventId, eventStartAt, eventName, tournamentName } =
+    await paginateSeeds(client, phaseId)
   const { phase, sets } = await paginateSets(client, phaseId)
   const singlesOnly = seeds.every((s) => s.participantCount <= 1)
   const elimination = ELIM_BRACKET_TYPES.has(phase.bracketType)
@@ -150,24 +169,39 @@ export async function loadPhase(
     asOfMs,
     ignoreLaterMeetings: shouldIgnoreLaterMeetings(asOfMs, nowMs),
     eventId,
+    eventName,
+    tournamentName,
   }
 }
 
 async function paginateSeeds(
   client: StartGgClient,
   phaseId: string,
-): Promise<{ seeds: SeedSlot[]; eventId: string | null; eventStartAt: number | null }> {
+): Promise<{
+  seeds: SeedSlot[]
+  eventId: string | null
+  eventStartAt: number | null
+  eventName: string
+  tournamentName: string
+}> {
   const out: SeedSlot[] = []
   let page = 1
   let eventId: string | null = null
   let eventStartAt: number | null = null
+  let eventName = ''
+  let tournamentName = ''
   while (true) {
     const data = await client.request<{
       phase: {
         id: string
         name: string
         bracketType: string
-        event: { id: string | number; startAt: number | null } | null
+        event: {
+          id: string | number
+          startAt: number | null
+          name: string | null
+          tournament: { name: string | null } | null
+        } | null
         seeds: { nodes: SeedNode[] } | null
       } | null
     }>(PHASE_SEEDS, { phaseId, page })
@@ -175,6 +209,8 @@ async function paginateSeeds(
     if (page === 1) {
       eventId = data.phase.event?.id != null ? String(data.phase.event.id) : null
       eventStartAt = data.phase.event?.startAt ?? null
+      eventName = data.phase.event?.name?.trim() ?? ''
+      tournamentName = data.phase.event?.tournament?.name?.trim() ?? ''
     }
     const nodes = data.phase.seeds?.nodes ?? []
     for (const n of nodes) {
@@ -191,7 +227,7 @@ async function paginateSeeds(
     if (nodes.length < 32) break
     page += 1
   }
-  return { seeds: out, eventId, eventStartAt }
+  return { seeds: out, eventId, eventStartAt, eventName, tournamentName }
 }
 
 async function paginateSets(
@@ -447,6 +483,7 @@ function candidatesFrom(
   const out: Array<{ clockMs: number; fromCompleted: boolean; set: HistorySet }> = []
   for (const set of sets) {
     if (excludeEventId && set.eventId === excludeEventId) continue
+    if (isDqSet(set)) continue
     const clock = setClock({
       completedAt: set.completedAt,
       eventStartAt: set.eventStartAt,
@@ -609,6 +646,7 @@ export function mapHistorySet(n: H2HNode): HistorySet | null {
     completedAt: startGgUnixToMs(n.completedAt),
     startedAt: startGgUnixToMs(n.startedAt),
     fullRoundText: n.fullRoundText,
+    displayScore: n.displayScore ?? null,
     winnerId: n.winnerId != null ? String(n.winnerId) : null,
     eventName: n.event?.name ?? '',
     eventId: n.event?.id != null ? String(n.event.id) : null,
@@ -617,6 +655,150 @@ export function mapHistorySet(n: H2HNode): HistorySet | null {
     tournamentName: n.event?.tournament?.name ?? '',
     tournamentSlug: startGgPathSegment(n.event?.tournament?.slug ?? '', 'tournament'),
     slots: slots as HistorySet['slots'],
+  }
+}
+
+const DAY_MS = 86_400_000
+
+function eventHref(tournamentSlug: string, eventSlug: string): string {
+  const tournament = startGgPathSegment(tournamentSlug, 'tournament')
+  const event = startGgPathSegment(eventSlug, 'event')
+  if (!tournament || !event) return ''
+  return `https://www.start.gg/tournament/${tournament}/event/${event}`
+}
+
+function startAtMs(value: number | null | undefined): number | null {
+  return startGgUnixToMs(value ?? null)
+}
+
+/** Closest upcoming start. Prefer organizing when two share the same start. */
+export function pickDefaultUpcoming(
+  organizing: UpcomingEventOption[],
+  playing: UpcomingEventOption[],
+  nowMs = Date.now(),
+): UpcomingEventOption | null {
+  const pool = [...organizing, ...playing]
+  if (pool.length === 0) return null
+  let best: UpcomingEventOption | null = null
+  let bestDelta = Number.POSITIVE_INFINITY
+  for (const option of pool) {
+    const delta = Math.abs(option.startAt - nowMs)
+    if (delta < bestDelta) {
+      best = option
+      bestDelta = delta
+      continue
+    }
+    if (
+      delta === bestDelta &&
+      best &&
+      option.role === 'organizing' &&
+      best.role !== 'organizing'
+    ) {
+      best = option
+    }
+  }
+  return best
+}
+
+type UpcomingTournamentNode = {
+  id: string
+  name: string
+  slug: string
+  startAt: number | null
+  owner?: { id: string } | null
+  events: Array<{
+    id: string
+    name: string
+    slug: string
+    startAt: number | null
+    entrants?: { nodes: Array<{ id: string }> | null } | null
+  }> | null
+}
+
+function pushUpcomingEvent(
+  into: UpcomingEventOption[],
+  seen: Set<string>,
+  tournament: { name: string; slug: string; startAt: number | null },
+  event: { id: string; name: string; slug: string; startAt: number | null },
+  role: UpcomingEventOption['role'],
+  nowMs: number,
+) {
+  const start = startAtMs(event.startAt ?? tournament.startAt)
+  if (start == null || start < nowMs - DAY_MS) return
+  const href = eventHref(tournament.slug, event.slug)
+  if (!href) return
+  const id = String(event.id)
+  if (seen.has(id)) return
+  seen.add(id)
+  into.push({
+    id,
+    label: `${tournament.name} · ${event.name}`,
+    href,
+    startAt: start,
+    role,
+  })
+}
+
+export async function listUpcomingEvents(
+  client: StartGgClient,
+  nowMs = Date.now(),
+  perPage = 30,
+): Promise<{
+  organizing: UpcomingEventOption[]
+  playing: UpcomingEventOption[]
+  defaultEvent: UpcomingEventOption | null
+}> {
+  const me = await client.request<{
+    currentUser: {
+      id: string
+      player: { id: string; gamerTag: string | null } | null
+    } | null
+  }>(CURRENT_USER_PLAYER)
+
+  const userId = me.currentUser?.id
+  const entrantName = me.currentUser?.player?.gamerTag?.trim()
+  if (!userId || !entrantName) {
+    return { organizing: [], playing: [], defaultEvent: null }
+  }
+
+  const data = await client.request<{
+    currentUser: {
+      id: string
+      tournaments: { nodes: UpcomingTournamentNode[] | null } | null
+    } | null
+    owned: { nodes: UpcomingTournamentNode[] | null } | null
+  }>(UPCOMING_FOR_ME, { perPage, entrantName, ownerId: userId })
+
+  const organizing: UpcomingEventOption[] = []
+  const playing: UpcomingEventOption[] = []
+  const seen = new Set<string>()
+  const meId = String(userId)
+
+  for (const tournament of data.owned?.nodes ?? []) {
+    for (const event of tournament.events ?? []) {
+      pushUpcomingEvent(organizing, seen, tournament, event, 'organizing', nowMs)
+    }
+  }
+
+  for (const tournament of data.currentUser?.tournaments?.nodes ?? []) {
+    const owns = String(tournament.owner?.id ?? '') === meId
+    for (const event of tournament.events ?? []) {
+      if (owns) {
+        pushUpcomingEvent(organizing, seen, tournament, event, 'organizing', nowMs)
+        continue
+      }
+      if ((event.entrants?.nodes?.length ?? 0) > 0) {
+        pushUpcomingEvent(playing, seen, tournament, event, 'playing', nowMs)
+      }
+    }
+  }
+
+  organizing.sort((a, b) => a.startAt - b.startAt)
+  playing.sort((a, b) => a.startAt - b.startAt)
+  return {
+    organizing,
+    playing,
+    defaultEvent: pickDefaultUpcoming(organizing, playing, nowMs),
   }
 }
 

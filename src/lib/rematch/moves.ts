@@ -64,17 +64,17 @@ function heatsBySet(
 
 /** One line for a suggestion. The leftover bracket heat stays on the card, not here. */
 export function describeSuggestedMove(move: SuggestedMove): string {
-  const mover = `${move.entrantTag} (seed ${move.seedNumFrom})`
+  const mover = `${move.entrantTag} (#${move.seedNumFrom})`
   const others = move.shifted
   let slide: string
   if (others.length === 1) {
     const partner = others[0]
-    slide = `Swap ${mover} with ${partner.tag} (seed ${partner.seedNumFrom}).`
+    slide = `Swap ${mover} with ${partner.tag} (#${partner.seedNumFrom}).`
   } else {
     const chain = others
-      .map((player) => `${player.tag} (seed ${player.seedNumFrom}) moves to seed ${player.seedNumTo}`)
+      .map((player) => `${player.tag} (#${player.seedNumFrom}) moves to #${player.seedNumTo}`)
       .join(', and ')
-    slide = `Move ${mover} to seed ${move.seedNumTo}. ${chain}.`
+    slide = `Move ${mover} to #${move.seedNumTo}. ${chain}.`
   }
   if (move.setHeatBefore == null || move.setHeatAfter == null || !(move.setHeatAfter > 0)) {
     return slide
@@ -111,16 +111,13 @@ function playersWhoShift(
   return others
 }
 
-const PREVIEW_HINT = ' Click a move to preview possible new heated sets.'
-
-/** One line under the moves heading. Same leftover heat is stated once. */
-export function describeMovesCard(moves: SuggestedMove[]): string {
-  const low = Math.min(...moves.map((move) => move.newHottest))
-  const high = Math.max(...moves.map((move) => move.newHottest))
-  if (Math.abs(high - low) < 1e-9) {
-    return `These moves cool this set. Hottest heat left on the bracket: ${formatHeat(low)}.${PREVIEW_HINT}`
-  }
-  return `These moves cool this set. Hottest heat left on the bracket is ${formatHeat(low)} to ${formatHeat(high)}, depending on the move.${PREVIEW_HINT}`
+/** One line under the moves heading. */
+export function describeMovesCard(_moves: SuggestedMove[]): string {
+  return (
+    'These suggestions swap players around, causing new matchups that ' +
+    'potentially have no conflicts, or conflicts that are less harmful. ' +
+    'Click a set to preview all the changes to the bracket.'
+  )
 }
 
 function sameBracket(

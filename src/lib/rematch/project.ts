@@ -290,7 +290,7 @@ export function projectedSlotText(slot: ProjectedSlot): string {
   if (slot.kind === 'bye') return 'bye'
   if (slot.kind === 'unresolved') return 'unresolved'
   const tag = slot.gamerTag ?? 'player'
-  return slot.seedNum != null ? `${tag} (seed ${slot.seedNum})` : tag
+  return slot.seedNum != null ? `${tag} (#${slot.seedNum})` : tag
 }
 
 export function projectedPlayerIds(slots: ProjectedSlot[]): string[] {

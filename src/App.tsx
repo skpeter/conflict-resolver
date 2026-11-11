@@ -3,14 +3,18 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useMultipliers } from '@/hooks/useMultipliers'
+import { useStartGgAuth } from '@/hooks/useStartGgAuth'
 import {
   bracketChanged,
   buildPairList,
   abandonCheckingPairs,
   claimWrite,
   computeHeat,
+  formatAge,
   formatHeat,
-  heatBand,
+  heatFill,
+  heatInkIsDark,
+  heatSwatch,
   isAuthError,
   describeMovesCard,
   describeSuggestedMove,
@@ -43,12 +47,14 @@ import { WIDE_PAGE_SIZE, loadAliasPairHistories } from '@/lib/startgg/historyBen
 import {
   fetchPairHistory,
   listEliminationPhases,
+  listUpcomingEvents,
   loadPhase,
   pushSeeding,
   type LoadedPhase,
   type LookupCache,
   type PairHistoryResult,
   type PhaseInfo,
+  type UpcomingEventOption,
 } from '@/lib/startgg/load'
 
 type PairState =
@@ -93,7 +99,14 @@ type WriteLine = {
 
 export default function App() {
   const [link, setLink] = useState('')
-  const [token, setToken] = useState('')
+  const {
+    accessToken,
+    authError,
+    configured,
+    signIn,
+    signOut,
+    ensureToken,
+  } = useStartGgAuth()
   const [status, setStatus] = useState<string | null>(null)
   const [phaseChoices, setPhaseChoices] = useState<PhaseInfo[] | null>(null)
   const [loaded, setLoaded] = useState<LoadedPhase | null>(null)
@@ -113,12 +126,108 @@ export default function App() {
   } | null>(null)
 
   const MOVE_SEARCH_DELAY_MS = 200
+  const FLASH_MS = 2600
   const generation = useRef(0)
   const visitMap = useRef(new Map<string, PairState>())
   const visitAsOf = useRef<number | null>(null)
   const visitEventId = useRef<string | null>(null)
   const clientRef = useRef<StartGgClient | null>(null)
   const writeGate = useRef({ inFlight: false })
+  const receiptSectionRef = useRef<HTMLElement | null>(null)
+  const movesSectionRef = useRef<HTMLElement | null>(null)
+  const previewRef = useRef<HTMLDivElement | null>(null)
+  const flashTimers = useRef<{
+    receipt: number | null
+    moves: number | null
+    preview: number | null
+  }>({
+    receipt: null,
+    moves: null,
+    preview: null,
+  })
+  const [flashReceipt, setFlashReceipt] = useState(false)
+  const [flashMoves, setFlashMoves] = useState(false)
+  const [flashPreview, setFlashPreview] = useState(false)
+  const [upcoming, setUpcoming] = useState<{
+    organizing: UpcomingEventOption[]
+    playing: UpcomingEventOption[]
+  }>({ organizing: [], playing: [] })
+  const [upcomingError, setUpcomingError] = useState<string | null>(null)
+  const [pickedEventId, setPickedEventId] = useState('')
+
+  useEffect(() => {
+    if (accessToken && clientRef.current && !clientRef.current.usesToken(accessToken)) {
+      clientRef.current.setToken(accessToken)
+    }
+  }, [accessToken])
+
+  useEffect(() => {
+    if (!accessToken) {
+      setUpcoming({ organizing: [], playing: [] })
+      setUpcomingError(null)
+      setPickedEventId('')
+      return
+    }
+    let cancelled = false
+    const client =
+      clientRef.current?.usesToken(accessToken)
+        ? clientRef.current
+        : new StartGgClient(accessToken)
+    clientRef.current = client
+    setUpcomingError(null)
+    void listUpcomingEvents(client)
+      .then((result) => {
+        if (cancelled) return
+        setUpcoming({
+          organizing: result.organizing,
+          playing: result.playing,
+        })
+        setUpcomingError(null)
+        if (result.defaultEvent) {
+          setPickedEventId(result.defaultEvent.id)
+          setLink((current) => current.trim() || result.defaultEvent!.href)
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        setUpcoming({ organizing: [], playing: [] })
+        setUpcomingError("Couldn't load upcoming events.")
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [accessToken])
+
+  const flashSection = useCallback(
+    (which: 'receipt' | 'moves' | 'preview') => {
+      const setFlash =
+        which === 'receipt'
+          ? setFlashReceipt
+          : which === 'moves'
+            ? setFlashMoves
+            : setFlashPreview
+      const key = which
+      if (flashTimers.current[key] != null) {
+        window.clearTimeout(flashTimers.current[key]!)
+      }
+      setFlash(true)
+      flashTimers.current[key] = window.setTimeout(() => {
+        setFlash(false)
+        flashTimers.current[key] = null
+      }, FLASH_MS)
+    },
+    [FLASH_MS],
+  )
+
+  useEffect(() => {
+    return () => {
+      for (const key of ['receipt', 'moves', 'preview'] as const) {
+        if (flashTimers.current[key] != null) {
+          window.clearTimeout(flashTimers.current[key]!)
+        }
+      }
+    }
+  }, [])
 
   const {
     recencyMultiplier,
@@ -232,13 +341,13 @@ export default function App() {
       setStatus(resolved.reason)
       return
     }
-    if (!token.trim()) {
-      setStatus('Paste a start.gg token')
+    const trimmed = (await ensureToken())?.trim() ?? ''
+    if (!trimmed) {
+      setStatus('Sign in with start.gg')
       return
     }
     generation.current += 1
     const gen = generation.current
-    const trimmed = token.trim()
     clientRef.current?.retire()
     if (!clientRef.current?.usesToken(trimmed)) {
       clientRef.current = new StartGgClient(trimmed)
@@ -336,7 +445,6 @@ export default function App() {
           set,
           slots,
           projected: row.projected,
-          band: 'plain' as const,
           heat: 0,
           label: 'no player id',
           state: 'ready' as const,
@@ -347,7 +455,6 @@ export default function App() {
           set,
           slots,
           projected: row.projected,
-          band: 'plain' as const,
           heat: 0,
           label: null,
           state: 'ready' as const,
@@ -361,7 +468,6 @@ export default function App() {
           set,
           slots,
           projected: row.projected,
-          band: 'plain' as const,
           heat: 0,
           label: 'checking',
           state: 'checking' as const,
@@ -372,7 +478,6 @@ export default function App() {
           set,
           slots,
           projected: row.projected,
-          band: 'plain' as const,
           heat: 0,
           label: pair.label,
           state: 'failed' as const,
@@ -385,7 +490,6 @@ export default function App() {
           set,
           slots,
           projected: row.projected,
-          band: 'plain' as const,
           heat: 0,
           label: pair.status === 'no-player-id' ? 'no player id' : null,
           state: 'ready' as const,
@@ -396,7 +500,6 @@ export default function App() {
           set,
           slots,
           projected: row.projected,
-          band: 'plain' as const,
           heat: 0,
           label: null,
           state: 'ready' as const,
@@ -404,14 +507,12 @@ export default function App() {
       }
       const ri = rounds.get(set.id) ?? 1
       const heat = computeHeat(pair.days, ri, recencyMultiplier, roundMultiplier)
-      const band = heatBand(heat)
       return {
         set,
         slots,
         projected: row.projected,
-        band,
         heat,
-        label: band === 'plain' ? null : band,
+        label: null,
         state: 'ready' as const,
         receipt: pair.receipt,
         days: pair.days,
@@ -460,6 +561,10 @@ export default function App() {
     selectedSetId,
   ])
 
+  const selectedSet = useMemo(() => {
+    if (!selectedSetId) return null
+    return scoredSets.find((row) => row.set.id === selectedSetId) ?? null
+  }, [scoredSets, selectedSetId])
   const selectedMove = moves.find((m) => m.id === selectedMoveId) ?? null
   const heatedPreview = selectedMove ? heatedMovePreview(selectedMove.preview) : []
 
@@ -480,7 +585,7 @@ export default function App() {
   const canWrite =
     Boolean(
       loaded &&
-        token &&
+        accessToken &&
         unstarted &&
         selectedMove &&
         !writing &&
@@ -537,7 +642,7 @@ export default function App() {
   }
 
   const onWrite = async () => {
-    if (!selectedMove || !loaded || !clientRef.current || writeBlocked) return
+    if (!selectedMove || !loaded || writeBlocked) return
     if (!claimWrite(writeGate.current)) return
     setWriting(true)
     const phaseId = loaded.phase.id
@@ -545,6 +650,20 @@ export default function App() {
     const mapping = selectedMove.seedMapping
     const expected = selectedMove.expected
     try {
+      const token = await ensureToken()
+      if (!token) {
+        setWriteLine({
+          phaseName,
+          ok: false,
+          text: 'Sign in with start.gg',
+        })
+        return
+      }
+      if (!clientRef.current?.usesToken(token)) {
+        clientRef.current?.retire()
+        clientRef.current = new StartGgClient(token)
+      }
+      if (!clientRef.current) return
       await pushSeeding(clientRef.current, phaseId, mapping)
       setPreviewSnap({
         phaseId,
@@ -565,7 +684,6 @@ export default function App() {
       })
       if (isAuthError(message)) {
         setWriteBlocked(true)
-        setStatus(message)
       }
     } finally {
       writeGate.current.inFlight = false
@@ -575,44 +693,116 @@ export default function App() {
 
   return (
     <div className="mx-auto max-w-xl px-4 py-6 sm:px-6">
-      <h1 className="text-xl font-semibold">Conflict Resolver</h1>
-      <p className="mt-1 text-base text-zinc-600">
-        Paste a start.gg elimination bracket. Heat is a recent rematch that sits
-        early in the bracket.
+      <h1 className="flex items-center gap-2 text-xl font-semibold">
+        <img
+          src={`${import.meta.env.BASE_URL}polygon-mark.png`}
+          alt=""
+          width={28}
+          height={28}
+          className="size-7"
+        />
+        Conflict Resolver
+      </h1>
+      <p className="mt-1 text-base text-muted">
+        This tool was created to help resolve conflicts between players who got
+        matched too recently in a bracket. Very simple to use: sign in with
+        start.gg and paste the link to the event.
       </p>
 
       <div className="mt-6 space-y-4">
         <div>
-          <Label htmlFor="link">start.gg link</Label>
+          {accessToken ? (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-base">Signed in to start.gg</p>
+              <Button
+                className="border-border bg-surface text-ink hover:border-border hover:bg-surface"
+                onClick={() => {
+                  clientRef.current?.retire()
+                  clientRef.current = null
+                  signOut()
+                }}
+              >
+                Sign out
+              </Button>
+            </div>
+          ) : (
+            <Button className="w-full" onClick={signIn} disabled={!configured}>
+              Sign in with start.gg
+            </Button>
+          )}
+          {authError ? (
+            <p className="mt-1 text-base text-muted">{authError}</p>
+          ) : !configured ? (
+            <p className="mt-1 text-base text-muted">
+              This build is missing OAuth configuration.
+            </p>
+          ) : null}
+        </div>
+        <div>
+          <Label htmlFor="link">start.gg event link</Label>
           <Input
             id="link"
             value={link}
-            onChange={(e) => setLink(e.target.value)}
+            onChange={(e) => {
+              setLink(e.target.value)
+              setPickedEventId('')
+            }}
             placeholder="https://www.start.gg/tournament/…/event/…"
             autoComplete="off"
           />
+          {accessToken &&
+          (upcoming.organizing.length > 0 || upcoming.playing.length > 0) ? (
+            <div className="mt-2">
+              <Label htmlFor="upcoming">Or select an upcoming event</Label>
+              <select
+                id="upcoming"
+                className="min-h-11 w-full rounded-md border border-border bg-bg px-3 py-2 text-base text-ink outline-none focus:border-accent"
+                value={pickedEventId}
+                onChange={(e) => {
+                  const id = e.target.value
+                  setPickedEventId(id)
+                  const option = [...upcoming.organizing, ...upcoming.playing].find(
+                    (row) => row.id === id,
+                  )
+                  if (option) setLink(option.href)
+                }}
+              >
+                <option value="">Paste a link or pick an event</option>
+                {upcoming.organizing.length > 0 ? (
+                  <optgroup label="Organizing">
+                    {upcoming.organizing.map((row) => (
+                      <option key={row.id} value={row.id}>
+                        {row.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+                {upcoming.playing.length > 0 ? (
+                  <optgroup label="Playing">
+                    {upcoming.playing.map((row) => (
+                      <option key={row.id} value={row.id}>
+                        {row.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+              </select>
+            </div>
+          ) : accessToken && upcomingError ? (
+            <p className="mt-2 text-base text-muted">{upcomingError}</p>
+          ) : null}
         </div>
-        <div>
-          <Label htmlFor="token">start.gg token</Label>
-          <Input
-            id="token"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="Paste token"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          <p className="mt-1 text-base text-zinc-600">
-            This token stays in this tab and is sent only to start.gg.
-          </p>
-        </div>
-        <Button className="w-full" onClick={() => void onSubmitLink()}>
+        <Button
+          className="w-full"
+          onClick={() => void onSubmitLink()}
+          disabled={!accessToken}
+        >
           Load bracket
         </Button>
       </div>
 
       {status ? (
-        <p className="mt-4 rounded-md border border-zinc-400 bg-white px-3 py-2 text-base">
+        <p className="mt-4 rounded-md border border-border bg-surface px-3 py-2 text-base">
           {status}
         </p>
       ) : null}
@@ -636,21 +826,8 @@ export default function App() {
         </div>
       ) : null}
 
-      {writeLine ? (
-        <p
-          className={cn(
-            'mt-4 rounded-md border px-3 py-2 text-base',
-            writeLine.ok
-              ? 'border-zinc-500 bg-white'
-              : 'border-red-700 bg-red-50 text-red-900',
-          )}
-        >
-          {writeLine.phaseName}: {writeLine.text}
-        </p>
-      ) : null}
-
       {previewNote ? (
-        <p className="mt-4 rounded-md border border-zinc-500 bg-white px-3 py-2 text-base">
+        <p className="mt-4 rounded-md border border-border bg-surface px-3 py-2 text-base">
           {previewNote}
         </p>
       ) : null}
@@ -660,22 +837,54 @@ export default function App() {
       loaded.singlesOnly &&
       loaded.seeds.length > 0 ? (
         <>
-          <p className="mt-6 text-base text-zinc-600">
-            {loaded.phase.name}. {loaded.seeds.length} seeds.
-            {pairProgress.total > 0
-              ? ` History ${pairProgress.done}/${pairProgress.total}.`
-              : null}
-            {loaded.ignoreLaterMeetings
-              ? ` Meetings after ${localCalendarDate(loaded.asOfMs, timeZone)} are ignored.`
-              : null}
-            {unstarted
-              ? ' No set in this phase has started.'
-              : ' A set has started — write is hidden.'}
-          </p>
+          <div className="mt-6 space-y-2 text-base text-muted">
+            <p>
+              {loaded.tournamentName || 'Tournament'}
+              <br />
+              {loaded.eventName || 'Event'}
+              <br />
+              {unstarted
+                ? 'This event did not yet start - changes can still be made.'
+                : 'This event has already begun - changes cannot be made anymore unless the bracket is reset.'}
+              {loaded.ignoreLaterMeetings ? (
+                <>
+                  <br />
+                  {`Meetings after ${localCalendarDate(loaded.asOfMs, timeZone)} are ignored.`}
+                </>
+              ) : null}
+            </p>
+            {pairProgress.total > 0 ? (
+              <div>
+                <div
+                  className="h-2 overflow-hidden rounded-full bg-border"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={pairProgress.total}
+                  aria-valuenow={pairProgress.done}
+                  aria-label="History load progress"
+                >
+                  <div
+                    className="h-full rounded-full bg-brand-orange transition-[width]"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        (pairProgress.done / pairProgress.total) * 100,
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <p className="mt-1">
+                  {pairProgress.done < pairProgress.total
+                    ? 'Loading history...'
+                    : 'History complete!'}
+                </p>
+              </div>
+            ) : null}
+          </div>
 
-          <section className="mt-4 rounded-md border border-zinc-400 bg-white p-3">
-            <p className="mb-2 text-base tracking-wide text-zinc-500 uppercase">
-              Bracket
+          <section className="mt-4 rounded-md border border-border bg-surface p-3">
+            <p className="mb-2 text-base tracking-wide text-muted uppercase">
+              {loaded.phase.name} · {loaded.seeds.length} players
             </p>
             {loaded.sets.length === 0 ? (
               <>
@@ -685,13 +894,13 @@ export default function App() {
                     .map((seed) => (
                       <li
                         key={seed.seedId}
-                        className="min-h-11 rounded-md border border-zinc-300 px-3 py-2"
+                        className="min-h-11 rounded-md border border-border px-3 py-2"
                       >
                         Seed {seed.seedNum}. {seed.gamerTag ?? 'Bye'}
                       </li>
                     ))}
                 </ol>
-                <p className="mt-2 text-base text-zinc-700">
+                <p className="mt-2 text-base text-muted">
                   No sets yet. Pairs are not invented.
                 </p>
               </>
@@ -705,12 +914,18 @@ export default function App() {
                   <li key={row.set.id}>
                     <div
                       className={cn(
-                        'w-full rounded-md border px-3 py-2 text-left',
-                        row.band === 'hot' && 'border-zinc-700 bg-[var(--color-heat-hot)]',
-                        row.band === 'warm' && 'border-zinc-400 bg-[var(--color-heat-warm)]',
-                        row.band === 'plain' && 'border-zinc-300 bg-white',
-                        selected && 'ring-2 ring-zinc-900',
+                        'w-full rounded-md border border-border px-3 py-2 text-left',
+                        row.heat > 0 ? null : 'bg-surface',
+                        selected && 'ring-2 ring-accent',
                       )}
+                      style={
+                        row.heat > 0
+                          ? { backgroundColor: heatFill(row.heat) }
+                          : undefined
+                      }
+                      {...(row.heat > 0 && heatInkIsDark(row.heat)
+                        ? { 'data-heat': '' }
+                        : {})}
                     >
                     <button
                       type="button"
@@ -720,29 +935,40 @@ export default function App() {
                         if (row.state === 'ready' && 'receipt' in row && row.receipt) {
                           setReceiptSetId(row.set.id)
                         }
+                        window.requestAnimationFrame(() => {
+                          receiptSectionRef.current?.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'start',
+                          })
+                          flashSection('receipt')
+                          flashSection('moves')
+                        })
                       }}
                     >
                       <div className="flex flex-wrap items-baseline gap-x-2 font-semibold">
                         {row.slots.map((slot, index) => (
                           <span key={`${row.set.id}-${index}`}>
                             {index > 0 ? (
-                              <span className="mr-2 font-normal text-zinc-600">vs</span>
+                              <span className="row-muted mr-2 font-normal">vs</span>
                             ) : null}
-                            <SlotName slot={slot} />
+                            <SlotName
+                              slot={slot}
+                              heated={row.heat > 0 && heatInkIsDark(row.heat)}
+                            />
                           </span>
                         ))}
                         {row.projected ? (
-                          <span className="inline-block rounded border border-zinc-600 px-1.5 font-normal">
+                          <span className="inline-block rounded border border-current px-1.5 font-normal">
                             projected
                           </span>
                         ) : null}
                         {row.label ? (
-                          <span className="inline-block rounded border border-zinc-600 px-1.5 font-normal">
+                          <span className="inline-block rounded border border-current px-1.5 font-normal">
                             {row.label}
                           </span>
                         ) : null}
                       </div>
-                      <div className="mt-1 text-base text-zinc-700">
+                      <div className="row-muted mt-1 text-base">
                         {row.set.fullRoundText ?? 'Set'}
                         {row.state === 'ready' && row.heat > 0
                           ? ` · heat ${formatHeat(row.heat)}`
@@ -750,7 +976,7 @@ export default function App() {
                       </div>
                     </button>
                     {context ? (
-                      <p className="mt-1 text-base text-zinc-700">
+                      <p className="row-muted mt-1 text-base">
                         Loaded set {context.eventName}, {context.localDate}. Not
                         the receipt until history finishes.
                       </p>
@@ -771,56 +997,81 @@ export default function App() {
             )}
           </section>
 
-          <section className="mt-4 rounded-md border border-zinc-400 bg-white p-3">
-            <h2 className="text-base font-semibold">Last meeting</h2>
+          <section
+            ref={receiptSectionRef}
+            className={cn(
+              'mt-4 rounded-md border border-border bg-surface p-3 transition-shadow',
+              flashReceipt && 'ring-2 ring-brand-orange',
+            )}
+          >
+            <h2 className="text-base font-semibold">Last played set</h2>
             {activeReceipt && 'receipt' in activeReceipt && activeReceipt.receipt ? (
               <ReceiptBlock
                 receipt={activeReceipt.receipt}
                 names={entrantNames(activeReceipt.slots)}
               />
             ) : (
-              <p className="mt-2 text-base text-zinc-600">
-                Tap a settled match to open its last meeting.
+              <p className="mt-2 text-base text-muted">
+                Tap a settled match to open its last played set.
               </p>
             )}
           </section>
 
-          <section className="mt-4 rounded-md border border-zinc-400 bg-white p-3">
+          <section
+            ref={movesSectionRef}
+            className={cn(
+              'mt-4 rounded-md border border-border bg-surface p-3 transition-shadow',
+              flashMoves && 'ring-2 ring-brand-orange',
+            )}
+          >
             <h2 className="text-base font-semibold">
-              Moves for the selected set
+              {selectedSet
+                ? `Suggestions to resolve ${entrantNames(selectedSet.slots)}`
+                : 'Suggestions to resolve this conflict'}
             </h2>
             {!selectedSetId ? (
-              <p className="mt-2 text-base text-zinc-700">
+              <p className="mt-2 text-base text-muted">
                 Select a set to see moves that cool it.
               </p>
             ) : historyPending ? (
-              <p className="mt-2 text-base text-zinc-700">
-                Still reading history. The move appears when every pair is settled.
+              <p className="mt-2 text-base text-muted">
+                Still loading history... please wait!
               </p>
             ) : historyFailed ? (
-              <p className="mt-2 text-base text-zinc-700">{HISTORY_FAILED_MOVES}</p>
+              <p className="mt-2 text-base text-muted">{HISTORY_FAILED_MOVES}</p>
             ) : moves.length === 0 ? (
-              <p className="mt-2 text-base text-zinc-700">
+              <p className="mt-2 text-base text-muted">
                 No move cools this set without heating another.
               </p>
             ) : (
               <>
-                <p className="mt-2 text-base text-zinc-700">{describeMovesCard(moves)}</p>
+                <p className="mt-2 text-base text-muted">{describeMovesCard(moves)}</p>
                 <ul className="mt-2 space-y-2">
                   {moves.map((m) => (
                     <li key={m.id}>
-                      <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md border border-zinc-300 px-3 py-2 has-[:checked]:border-zinc-900">
+                      <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md border border-border px-3 py-2 has-[:checked]:border-accent">
                         <input
                           type="radio"
                           name="move"
                           className="mt-1 size-4"
                           checked={selectedMoveId === m.id}
-                          onChange={() => setSelectedMoveId(m.id)}
+                          onChange={() => {
+                            setSelectedMoveId(m.id)
+                            window.requestAnimationFrame(() => {
+                              window.requestAnimationFrame(() => {
+                                previewRef.current?.scrollIntoView({
+                                  behavior: 'smooth',
+                                  block: 'nearest',
+                                })
+                                flashSection('preview')
+                              })
+                            })
+                          }}
                         />
                         <span>
                           {describeSuggestedMove(m)}
                           {m.placementNotes.map((note) => (
-                            <span key={note} className="mt-1 block">
+                            <span key={note} className="mt-1 block italic">
                               {note}
                             </span>
                           ))}
@@ -833,15 +1084,31 @@ export default function App() {
             )}
 
             {selectedMove ? (
-              <div className="mt-3 space-y-1 text-base text-zinc-700">
+              <div
+                ref={previewRef}
+                className={cn(
+                  'mt-3 space-y-1 rounded-md p-2 text-base text-muted transition-shadow',
+                  flashPreview && 'ring-2 ring-brand-orange',
+                )}
+              >
                 {heatedPreview.length === 0 ? (
                   <p>This move does not change a heated set.</p>
                 ) : (
-                  heatedPreview.map((p) => (
-                    <p key={p.setId}>
-                      {`${p.before} → ${p.after} (${formatHeat(p.oldHeat ?? 0)} → ${formatHeat(p.newHeat ?? 0)})`}
-                    </p>
-                  ))
+                  heatedPreview.map((p) => {
+                    const hotter = (p.newHeat ?? 0) > (p.oldHeat ?? 0)
+                    return (
+                      <p
+                        key={p.setId}
+                        className={hotter ? 'font-semibold text-ink' : undefined}
+                      >
+                        {`${p.before} → ${p.after} (`}
+                        <HeatPercent heat={p.oldHeat ?? 0} />
+                        {' → '}
+                        <HeatPercent heat={p.newHeat ?? 0} />
+                        )
+                      </p>
+                    )
+                  })
                 )}
               </div>
             ) : null}
@@ -852,18 +1119,30 @@ export default function App() {
                 disabled={!canWrite}
                 onClick={() => void onWrite()}
               >
-                {writing ? 'Sending…' : 'Push this order to start.gg'}
+                {writing ? 'Sending…' : 'Send to start.gg'}
               </Button>
             ) : null}
+            {writeLine ? (
+              <p
+                className={cn(
+                  'mt-3 rounded-md border px-3 py-2 text-base',
+                  writeLine.ok
+                    ? 'border-border bg-surface'
+                    : 'border-danger-border bg-danger-bg text-danger-ink',
+                )}
+              >
+                {writeLine.phaseName}: {writeLine.text}
+              </p>
+            ) : null}
             {!unstarted ? (
-              <p className="mt-3 text-base text-zinc-600">
+              <p className="mt-3 text-base text-muted">
                 After the first set starts, this button is gone. The suggestion
                 stays. Edit the bracket by hand on start.gg.
               </p>
             ) : null}
           </section>
 
-          <details className="mt-4 rounded-md border border-zinc-400 bg-white p-3">
+          <details className="mt-4 rounded-md border border-border bg-surface p-3">
             <summary className="min-h-11 cursor-pointer font-semibold">
               Advanced
             </summary>
@@ -895,12 +1174,43 @@ export default function App() {
                 />
               </div>
             </div>
-            <p className="mt-2 text-base text-zinc-600">
+            <p className="mt-2 text-base text-muted">
               Saved on this browser only. Token and sets are not stored.
             </p>
           </details>
         </>
       ) : null}
+
+      <section className="mt-8 border-t border-border pt-4 text-center">
+        <p className="mb-3 text-base text-muted">
+          If this helped improve your events, support our work below! Questions
+          or feedback? Join the Discord.
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <a
+            href="https://ko-fi.com/teampolygonbr"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-block"
+          >
+            <img
+              src="https://storage.ko-fi.com/cdn/kofi2.png?v=3"
+              alt="Support Team Polygon Brazil on Ko-fi"
+              height={36}
+              width={143}
+              className="h-9 w-auto border-0"
+            />
+          </a>
+          <a
+            href="https://discord.gg/zecMKvF8b5"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex min-h-9 items-center rounded-md bg-[#5865F2] px-3 text-base font-semibold text-white hover:bg-[#4752c4]"
+          >
+            Discord
+          </a>
+        </div>
+      </section>
     </div>
   )
 }
@@ -915,14 +1225,31 @@ function entrantNames(slots: ProjectedSlot[]): string {
     .join(' vs ')
 }
 
-function SlotName({ slot }: { slot: ProjectedSlot }) {
+function HeatPercent({ heat }: { heat: number }) {
+  const color = heat > 0 ? heatSwatch(heat) : undefined
+  return (
+    <span style={color ? { color } : undefined} className={heat > 0 ? undefined : 'text-muted'}>
+      {formatHeat(heat)}
+    </span>
+  )
+}
+
+function SlotName({
+  slot,
+  heated = false,
+}: {
+  slot: ProjectedSlot
+  heated?: boolean
+}) {
   if (slot.kind === 'bye') return 'Bye'
   if (slot.kind === 'unresolved') return 'Unresolved'
   return (
     <>
       {slot.gamerTag ?? 'unknown'}
       {slot.seedNum != null ? (
-        <span className="ml-2 font-normal text-zinc-600">seed {slot.seedNum}</span>
+        <span className={cn('ml-2 font-normal', heated ? 'row-muted' : 'text-muted')}>
+          #{slot.seedNum}
+        </span>
       ) : null}
     </>
   )
@@ -945,36 +1272,34 @@ function ReceiptBlock({
       <p className="font-semibold">{names}</p>
       <dl className="mt-2 space-y-2">
         <div>
-          <dt className="text-zinc-500">When</dt>
+          <dt className="text-muted">When</dt>
           <dd>
-            {receipt.localDate} · {receipt.exactDays} days
+            {receipt.localDate} · {formatAge(receipt.exactDays)}
           </dd>
         </div>
         <div>
-          <dt className="text-zinc-500">Event</dt>
+          <dt className="text-muted">Event</dt>
           <dd>{receiptHeading(receipt.tournamentName, receipt.eventName)}</dd>
         </div>
         <div>
-          <dt className="text-zinc-500">Round</dt>
+          <dt className="text-muted">Round</dt>
           <dd>{receipt.roundText || '—'}</dd>
         </div>
         <div>
-          <dt className="text-zinc-500">Result</dt>
-          <dd>{receipt.winnerTag ? `${receipt.winnerTag} won` : '—'}</dd>
+          <dt className="text-muted">Winner</dt>
+          <dd>{receipt.winnerTag || '—'}</dd>
         </div>
         <div>
-          <dt className="text-zinc-500">Set</dt>
           <dd>
             <a href={href} target="_blank" rel="noreferrer">
               Open on start.gg
-            </a>{' '}
-            <span className="text-base text-zinc-500">(set {receipt.setId})</span>
+            </a>
           </dd>
         </div>
       </dl>
-      <p className="mt-3 text-base text-zinc-600">
-        If this set is the wrong people, the glow is wrong. This page cannot fix
-        aliases. It only shows the set.
+      <p className="mt-3 text-base text-muted">
+        Keep in mind that this app does not know about players&apos; alternate
+        accounts.
       </p>
     </div>
   )

@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { receiptSetUrl } from '../src/lib/rematch/receipt.ts'
-import { fetchPairHistory } from '../src/lib/startgg/load.ts'
+import {
+  fetchPairHistory,
+  isDqSet,
+  pickDefaultUpcoming,
+} from '../src/lib/startgg/load.ts'
 import type { StartGgClient } from '../src/lib/startgg/client.ts'
 
 const DAY_MS = 86_400_000
@@ -191,5 +195,60 @@ describe('start.gg history clocks', () => {
       'UTC',
     )
     assert.equal(result.kind, 'cold')
+  })
+
+  it('skips a DQ when a real meeting is older', async () => {
+    assert.equal(isDqSet({ displayScore: 'MightyAli 0 - SKPeter DQ' }), true)
+    assert.equal(isDqSet({ displayScore: 'MightyAli 3 - SKPeter 1' }), false)
+    const dq = meeting(secondsAgo(2), secondsAgo(2), {
+      id: 'dq-set',
+      eventName: 'DQ Weekly',
+    })
+    dq.displayScore = 'MightyAli 0 - SKPeter DQ'
+    const prior = meeting(secondsAgo(20), secondsAgo(20), {
+      id: 'real-set',
+      eventId: 'prior-event',
+      eventName: 'Prior Weekly',
+    })
+    const result = await fetchPairHistory(
+      clientReturningNodes([dq, prior]),
+      '1744096',
+      '175453',
+      NOW_MS,
+      'UTC',
+    )
+    assert.equal(result.kind, 'heat')
+    if (result.kind !== 'heat') return
+    assert.equal(result.receipt.setId, 'real-set')
+    assert.ok(Math.abs(result.heatDays - 20) < 0.01)
+  })
+
+  it('defaults to the nearest upcoming event and prefers organizing on a tie', () => {
+    const organizing = [
+      {
+        id: 'org-far',
+        label: 'Far',
+        href: 'https://www.start.gg/tournament/far/event/singles',
+        startAt: NOW_MS + 10 * DAY_MS,
+        role: 'organizing' as const,
+      },
+      {
+        id: 'org-near',
+        label: 'Near Org',
+        href: 'https://www.start.gg/tournament/near/event/singles',
+        startAt: NOW_MS + 2 * DAY_MS,
+        role: 'organizing' as const,
+      },
+    ]
+    const playing = [
+      {
+        id: 'play-near',
+        label: 'Near Play',
+        href: 'https://www.start.gg/tournament/play/event/singles',
+        startAt: NOW_MS + 2 * DAY_MS,
+        role: 'playing' as const,
+      },
+    ]
+    assert.equal(pickDefaultUpcoming(organizing, playing, NOW_MS)?.id, 'org-near')
   })
 })
