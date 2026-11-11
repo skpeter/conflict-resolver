@@ -88,10 +88,10 @@ describe('clock', () => {
     assert.equal(inWindow(now, now), true)
   })
 
-  it('scores a past event as of its start and an upcoming event as of now', () => {
+  it('scores past and upcoming events as of the event start', () => {
     const now = 1_000_000_000_000
     assert.equal(historyAsOf(null, now), now)
-    assert.equal(historyAsOf(now + DAY, now), now)
+    assert.equal(historyAsOf(now + DAY, now), now + DAY)
     assert.equal(historyAsOf(now - 13 * DAY, now), now - 13 * DAY)
   })
 
@@ -217,12 +217,12 @@ describe('receipt format', () => {
   })
 
   it('rounds age into days, weeks, and months', () => {
-    assert.equal(formatAge(0), '0 days ago')
-    assert.equal(formatAge(1), '1 day ago')
-    assert.equal(formatAge(4.146238), '4 days ago')
-    assert.equal(formatAge(10), '1 week ago')
-    assert.equal(formatAge(14), '2 weeks ago')
-    assert.equal(formatAge(50), '2 months ago')
+    assert.equal(formatAge(0), '0 days before this event')
+    assert.equal(formatAge(1), '1 day before this event')
+    assert.equal(formatAge(4.146238), '4 days before this event')
+    assert.equal(formatAge(10), '1 week before this event')
+    assert.equal(formatAge(14), '2 weeks before this event')
+    assert.equal(formatAge(50), '2 months before this event')
   })
 })
 
@@ -1206,6 +1206,21 @@ describe('focused moves', () => {
   it('hides suggestions until a set is selected', () => {
     assert.deepEqual(movesForSelectedSet(null, movesFor('wf')), [])
     assert.ok(movesForSelectedSet('wf', movesFor('wf')).length > 0)
+  })
+
+  it('orders seedMapping by rising seedNum after a slide', () => {
+    const moves = movesFor('wf')
+    const slid = moves.find((move) => move.seedNumFrom === 2 && move.seedNumTo === 3)
+    assert.ok(slid)
+    assert.deepEqual(
+      slid.seedMapping.map((slot) => slot.seedNum),
+      [1, 2, 3, 4],
+    )
+    // #2 and #3 swap holders; array must still list seedNums 1..n in order.
+    assert.deepEqual(
+      slid.seedMapping.map((slot) => slot.seedId),
+      ['s1', 's3', 's2', 's4'],
+    )
   })
 
   it('names this set’s drop apart from the heat left on the bracket', () => {

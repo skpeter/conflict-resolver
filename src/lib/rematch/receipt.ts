@@ -20,19 +20,19 @@ export function exactDayCount(days: number): string {
   return days.toFixed(6).replace(/\.?0+$/, '')
 }
 
-/** Organizer-facing age: rounded days, then weeks, then months. */
+/** Organizer-facing age vs the loaded event start: rounded days, then weeks, then months. */
 export function formatAge(days: number): string {
-  if (!(days >= 0)) return '0 days ago'
+  if (!(days >= 0)) return '0 days before this event'
   if (days < 7) {
     const n = Math.max(0, Math.round(days))
-    return n === 1 ? '1 day ago' : `${n} days ago`
+    return n === 1 ? '1 day before this event' : `${n} days before this event`
   }
   if (days < 45) {
     const n = Math.max(1, Math.round(days / 7))
-    return n === 1 ? '1 week ago' : `${n} weeks ago`
+    return n === 1 ? '1 week before this event' : `${n} weeks before this event`
   }
   const n = Math.max(1, Math.round(days / 30))
-  return n === 1 ? '1 month ago' : `${n} months ago`
+  return n === 1 ? '1 month before this event' : `${n} months before this event`
 }
 
 /**

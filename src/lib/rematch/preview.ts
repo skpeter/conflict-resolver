@@ -22,7 +22,7 @@ export function playerKeyOf(players: Array<string | null>): string {
 /**
  * True when the refreshed bracket's seeded pairs disagree with the preview
  * that was sent. Sets with no seed number are left out. Heat is left out:
- * an upcoming event rescores as of now, so a later refresh is not a new bracket.
+ * age is scored as of the event start, so a later refresh is not a new bracket.
  */
 export function bracketChanged(
   expected: BracketRow[],

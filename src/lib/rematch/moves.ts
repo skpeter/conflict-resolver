@@ -289,8 +289,8 @@ export function listSuggestedMoves(args: {
       const newHottest = hottestHeat(afterHeats)
       if (!focusSetId && !(newHottest < currentHottest)) continue
 
+      // start.gg rejects seedMapping unless seedNum rises through the array.
       const seedMapping = [...seeds]
-        .sort((a, b) => a.seedNum - b.seedNum)
         .map((s) => {
           let seedNum = s.seedNum
           for (const [num, holder] of mapping) {
@@ -301,6 +301,7 @@ export function listSuggestedMoves(args: {
           }
           return { seedId: s.seedId, seedNum }
         })
+        .sort((a, b) => a.seedNum - b.seedNum)
 
       candidates.push({
         sameTier,

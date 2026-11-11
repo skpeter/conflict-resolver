@@ -40,11 +40,12 @@ export function ageDays(nowMs: number, clockMs: number): number | null {
 }
 
 /**
- * When the loaded event has already started, score meetings as of that start.
- * Later events then fall outside the window. An upcoming event stays as of now.
+ * Score meetings as of the loaded event's start when known.
+ * Past and upcoming events share that clock so heat matches game day.
+ * Later meetings then fall outside the window. Missing start stays as of now.
  */
 export function historyAsOf(eventStartMs: number | null, nowMs: number): number {
-  if (eventStartMs == null || eventStartMs > nowMs) return nowMs
+  if (eventStartMs == null) return nowMs
   return eventStartMs
 }
 

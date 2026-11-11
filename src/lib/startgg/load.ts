@@ -807,5 +807,6 @@ export async function pushSeeding(
   phaseId: string,
   seedMapping: Array<{ seedId: string; seedNum: number }>,
 ): Promise<void> {
-  await client.request(UPDATE_PHASE_SEEDING, { phaseId, seedMapping })
+  const ordered = [...seedMapping].sort((a, b) => a.seedNum - b.seedNum)
+  await client.request(UPDATE_PHASE_SEEDING, { phaseId, seedMapping: ordered })
 }
