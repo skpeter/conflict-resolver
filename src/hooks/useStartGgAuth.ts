@@ -2,35 +2,35 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { isOAuthConfigured, oauthWorkerUrl } from '@/lib/oauth/config'
 import {
   consumeOAuthHash,
-  CSRF_KEY,
   LEGACY_TOKEN_KEY,
   parseStoredSession,
+  readOAuthCsrf,
   refreshUrl,
   SESSION_KEY,
   sessionFromTokenResponse,
   sessionFromTokens,
   sessionNeedsRefresh,
   signInUrl,
+  writeOAuthCsrf,
   type OAuthSession,
 } from '@/lib/oauth/session'
 
+function browserStores(): {
+  session: Storage | undefined
+  local: Storage | undefined
+} {
+  if (typeof window === 'undefined') return { session: undefined, local: undefined }
+  return { session: window.sessionStorage, local: window.localStorage }
+}
+
 function readCsrf(): string {
-  if (typeof sessionStorage === 'undefined') return ''
-  try {
-    return sessionStorage.getItem(CSRF_KEY) ?? ''
-  } catch {
-    return ''
-  }
+  const { session, local } = browserStores()
+  return readOAuthCsrf(session, local)
 }
 
 function writeCsrf(value: string | null) {
-  if (typeof sessionStorage === 'undefined') return
-  try {
-    if (value) sessionStorage.setItem(CSRF_KEY, value)
-    else sessionStorage.removeItem(CSRF_KEY)
-  } catch {
-    // Private mode or quota.
-  }
+  const { session, local } = browserStores()
+  writeOAuthCsrf(value, session, local)
 }
 
 function clearLegacyToken() {

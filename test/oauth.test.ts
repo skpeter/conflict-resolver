@@ -3,14 +3,41 @@ import { describe, it } from 'node:test'
 import { normalizeOAuthWorkerUrl } from '../src/lib/oauth/config.ts'
 import {
   consumeOAuthHash,
+  CSRF_KEY,
   parseOAuthHash,
   parseStoredSession,
+  readOAuthCsrf,
   refreshUrl,
   sessionFromTokenResponse,
   sessionFromTokens,
   sessionNeedsRefresh,
   signInUrl,
+  writeOAuthCsrf,
 } from '../src/lib/oauth/session.ts'
+
+function memoryStore(): Storage {
+  const map = new Map<string, string>()
+  return {
+    get length() {
+      return map.size
+    },
+    clear() {
+      map.clear()
+    },
+    getItem(key: string) {
+      return map.has(key) ? map.get(key)! : null
+    },
+    key(index: number) {
+      return [...map.keys()][index] ?? null
+    },
+    removeItem(key: string) {
+      map.delete(key)
+    },
+    setItem(key: string, value: string) {
+      map.set(key, value)
+    },
+  }
+}
 import {
   buildAuthorizeUrl,
   callbackRedirectUri,
@@ -245,5 +272,19 @@ describe('spa hash and session', () => {
       'https://oauth.example/oauth/start?return=https%3A%2F%2Fskpeter.github.io%2Fconflict-resolver%2F&state=csrf-1',
     )
     assert.equal(refreshUrl('https://oauth.example'), 'https://oauth.example/oauth/refresh')
+  })
+
+  it('dual-writes CSRF and recovers from localStorage when sessionStorage is empty', () => {
+    const session = memoryStore()
+    const local = memoryStore()
+    writeOAuthCsrf('csrf-1', session, local)
+    assert.equal(session.getItem(CSRF_KEY), 'csrf-1')
+    assert.equal(local.getItem(CSRF_KEY), 'csrf-1')
+    session.removeItem(CSRF_KEY)
+    assert.equal(readOAuthCsrf(session, local), 'csrf-1')
+    writeOAuthCsrf(null, session, local)
+    assert.equal(session.getItem(CSRF_KEY), null)
+    assert.equal(local.getItem(CSRF_KEY), null)
+    assert.equal(readOAuthCsrf(session, local), '')
   })
 })

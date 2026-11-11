@@ -3,6 +3,43 @@ export const CSRF_KEY = 'conflict-resolver.oauth-state'
 export const LEGACY_TOKEN_KEY = 'conflict-resolver.startgg-token'
 export const REFRESH_SKEW_MS = 5 * 60_000
 
+type WebStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+
+/** Prefer sessionStorage; fall back to localStorage after mobile app handoff opens a new tab. */
+export function readOAuthCsrf(
+  sessionStore: WebStorage | null | undefined,
+  localStore: WebStorage | null | undefined,
+): string {
+  try {
+    const fromSession = sessionStore?.getItem(CSRF_KEY)
+    if (fromSession) return fromSession
+  } catch {
+    // Private mode or quota.
+  }
+  try {
+    return localStore?.getItem(CSRF_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** Dual-write so CSRF survives a new tab when start.gg hands auth back from its native app. */
+export function writeOAuthCsrf(
+  value: string | null,
+  sessionStore: WebStorage | null | undefined,
+  localStore: WebStorage | null | undefined,
+) {
+  for (const store of [sessionStore, localStore]) {
+    if (!store) continue
+    try {
+      if (value) store.setItem(CSRF_KEY, value)
+      else store.removeItem(CSRF_KEY)
+    } catch {
+      // Private mode or quota.
+    }
+  }
+}
+
 export type OAuthSession = {
   accessToken: string
   refreshToken: string
