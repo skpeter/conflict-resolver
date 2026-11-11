@@ -27,3 +27,8 @@ dist-ssr
 *.sw?
 
 .gstack
+
+# Local development notes (private sibling: skpeter/conflict-resolver-private)
+AGENTS.md
+TODOS.md
+CHANGELOG.md
