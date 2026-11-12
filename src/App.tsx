@@ -1188,7 +1188,7 @@ export default function App() {
         </p>
         <div className="flex flex-wrap items-center justify-center gap-3">
           <a
-            href="https://ko-fi.com/teampolygonbr"
+            href="https://ko-fi.com/teampolygon"
             target="_blank"
             rel="noreferrer"
             className="inline-block"
